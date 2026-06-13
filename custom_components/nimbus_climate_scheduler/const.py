@@ -10,7 +10,7 @@ STORAGE_VERSION = 1
 
 PANEL_URL = "nimbus-climate-scheduler"
 PANEL_TITLE = "Climate Schedule"
-PANEL_ICON = "mdi:calendar-clock"
+PANEL_ICON = "mdi:tune"
 PANEL_COMPONENT_NAME = "nimbus-climate-scheduler-panel"
 PANEL_JS_FILENAME = "nimbus-climate-scheduler-panel.js"
 FRONTEND_PATH = f"/{DOMAIN}/frontend"
