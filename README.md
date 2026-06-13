@@ -1,3 +1,5 @@
+<img src="docs/icon.svg" width="64" align="right" alt="">
+
 # Nimbus Climate Scheduler
 
 A weekly heating & cooling scheduler for Home Assistant — a full sidebar panel
