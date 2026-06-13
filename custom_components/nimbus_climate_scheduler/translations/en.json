@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Nimbus Climate Scheduler",
+        "description": "Adds the Climate Schedule panel to the sidebar. Pick your thermostats and zones inside the panel afterwards."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Nimbus Climate Scheduler is already configured."
+    }
+  }
+}
