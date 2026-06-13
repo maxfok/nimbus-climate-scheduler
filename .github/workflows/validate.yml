@@ -17,9 +17,6 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
-          # brands inclusion is done via a separate PR to home-assistant/brands;
-          # ignore it here so the workflow is green until that PR is merged.
-          ignore: brands
 
   hassfest:
     name: Hassfest
