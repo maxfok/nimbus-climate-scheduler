@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
+    CARD_MODULE_URL,
     CONF_CLIMATES,
     CONF_ENTITY,
     CONF_NAME,
@@ -115,6 +116,13 @@ async def _async_setup_scheduler(
             ]
         )
         hass.data[static_flag] = True
+
+    # Auto-load the dashboard card module so users don't have to add it as a
+    # Lovelace resource by hand. Additive and idempotent — guarded once per run.
+    card_flag = f"{DOMAIN}_card_registered"
+    if not hass.data.get(card_flag):
+        frontend.add_extra_js_url(hass, CARD_MODULE_URL)
+        hass.data[card_flag] = True
 
     if _panel_custom_is_already_registered(full_config):
         return

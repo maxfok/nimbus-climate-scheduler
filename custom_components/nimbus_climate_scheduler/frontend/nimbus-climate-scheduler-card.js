@@ -289,23 +289,25 @@
   class NimbusClimateSchedulerCardEditor extends HTMLElement {
     setConfig(config) {
       this._config = { ...config };
-      this._render();
+      if (!this._built) this._build();
+      else this._sync(); // update values in place — never rebuild while editing
     }
     set hass(hass) {
       this._hass = hass;
       this._maybeFetchZones();
-      this._render();
+      if (!this._built) this._build();
     }
 
     async _maybeFetchZones() {
-      if (!this._hass?.callWS || this._zones) return;
+      if (!this._hass?.callWS || this._zonesLoaded) return;
+      this._zonesLoaded = true;
       try {
         const result = await this._hass.callWS({ type: WS_GET_ZONES });
         this._zones = Object.keys(result?.zones ?? {});
-        this._render();
       } catch (err) {
         this._zones = [];
       }
+      this._populateEntity(); // swap the entity field only; leaves the name input (and its cursor) alone
     }
 
     _emit() {
@@ -316,29 +318,9 @@
       }));
     }
 
-    _render() {
+    _build() {
       if (!this._config) return;
       if (!this.shadowRoot) this.attachShadow({ mode: "open" });
-
-      const zones = this._zones ?? null;
-      const current = this._config.entity ?? "";
-      const friendly = (id) => this._hass?.states?.[id]?.attributes?.friendly_name ?? id;
-
-      let entityField;
-      if (zones && zones.length) {
-        const options = zones
-          .map((id) => `<option value="${id}" ${id === current ? "selected" : ""}>${friendly(id)}</option>`)
-          .join("");
-        entityField = `<label>Zone (climate entity)
-            <select id="entity"><option value="">— select —</option>${options}</select>
-          </label>`;
-      } else {
-        entityField = `<label>Zone (climate entity)
-            <input id="entity" type="text" value="${current}" placeholder="climate.nursery_thermostat" />
-          </label>
-          <div class="hint">${zones ? "No Nimbus zones found — set up the scheduler panel first, or type the climate entity id." : "Loading zones…"}</div>`;
-      }
-
       this.shadowRoot.innerHTML = `
         <style>
           .form{ display:flex; flex-direction:column; gap:14px; padding:4px 2px; }
@@ -349,14 +331,48 @@
           .hint{ font-size:12px; color: var(--secondary-text-color, #888); margin-top:-8px; }
         </style>
         <div class="form">
-          ${entityField}
+          <div id="entity-field"></div>
           <label>Name (optional)
-            <input id="name" type="text" value="${this._config.name ?? ""}" placeholder="overrides the entity name" />
+            <input id="name" type="text" placeholder="overrides the entity name" />
           </label>
         </div>`;
 
+      this._nameEl = this.shadowRoot.getElementById("name");
+      this._nameEl.value = this._config.name ?? "";
+      this._nameEl.addEventListener("input", () => {
+        const v = this._nameEl.value.trim();
+        if (v) this._config.name = v; else delete this._config.name;
+        this._emit();
+      });
+
+      this._built = true;
+      this._populateEntity();
+    }
+
+    // (Re)render only the entity field — used on build and once zones arrive.
+    _populateEntity() {
+      if (!this._built) return;
+      const host = this.shadowRoot.getElementById("entity-field");
+      if (!host) return;
+      const zones = this._zones ?? null;
+      const current = this._config.entity ?? "";
+      const friendly = (id) => this._hass?.states?.[id]?.attributes?.friendly_name ?? id;
+
+      if (zones && zones.length) {
+        const options = zones
+          .map((id) => `<option value="${id}" ${id === current ? "selected" : ""}>${friendly(id)}</option>`)
+          .join("");
+        host.innerHTML = `<label>Zone (climate entity)
+            <select id="entity"><option value="">— select —</option>${options}</select>
+          </label>`;
+      } else {
+        host.innerHTML = `<label>Zone (climate entity)
+            <input id="entity" type="text" value="${current}" placeholder="climate.nursery_thermostat" />
+          </label>
+          <div class="hint">${zones ? "No Nimbus zones found — set up the scheduler panel first, or type the climate entity id." : "Loading zones…"}</div>`;
+      }
+
       const entityEl = this.shadowRoot.getElementById("entity");
-      const nameEl = this.shadowRoot.getElementById("name");
       const onEntity = () => {
         const v = entityEl.value.trim();
         if (v) this._config.entity = v; else delete this._config.entity;
@@ -364,11 +380,15 @@
       };
       entityEl.addEventListener("change", onEntity);
       if (entityEl.tagName === "INPUT") entityEl.addEventListener("input", onEntity);
-      nameEl.addEventListener("input", () => {
-        const v = nameEl.value.trim();
-        if (v) this._config.name = v; else delete this._config.name;
-        this._emit();
-      });
+    }
+
+    // Reflect config changes without recreating nodes, so focus/cursor survive.
+    _sync() {
+      if (!this._built) return;
+      const focused = this.shadowRoot.activeElement;
+      if (this._nameEl && focused !== this._nameEl) this._nameEl.value = this._config.name ?? "";
+      const entityEl = this.shadowRoot.getElementById("entity");
+      if (entityEl && focused !== entityEl) entityEl.value = this._config.entity ?? "";
     }
   }
 
