@@ -68,10 +68,20 @@
 
   class NimbusClimateSchedulerCard extends HTMLElement {
     setConfig(config) {
-      if (!config || !config.entity) throw new Error("nimbus-climate-scheduler-card: 'entity' is required");
+      if (!config) throw new Error("nimbus-climate-scheduler-card: config is required");
+      // Accept a single `entity` or a list of `entities` (each a string or {entity, name}).
+      const raw = Array.isArray(config.entities) && config.entities.length
+        ? config.entities
+        : (config.entity ? [config.entity] : []);
+      const entities = raw
+        .map((e) => (typeof e === "string" ? { entity: e } : { entity: e?.entity, name: e?.name }))
+        .filter((e) => e.entity);
+      if (!entities.length) throw new Error("nimbus-climate-scheduler-card: 'entity' or 'entities' is required");
       this._config = { ...config };
+      this._entities = entities;
+      if (this._activeIndex == null || this._activeIndex >= entities.length) this._activeIndex = 0;
       if (!this.shadowRoot) this.attachShadow({ mode: "open" });
-      if (this._hass) this._render();
+      this._render(); // paint the themed shell now, even before hass, to avoid a FOUC
     }
 
     set hass(hass) {
@@ -129,15 +139,15 @@
       }
     }
 
-    _model() {
-      const cfg = this._config, hass = this._hass;
-      const st = hass?.states?.[cfg.entity];
-      if (!st) return { error: `Entity not found: ${cfg.entity}` };
+    _model(ent) {
+      const hass = this._hass;
+      const st = hass?.states?.[ent.entity];
+      if (!st) return { error: `Entity not found: ${ent.entity}` };
       const a = st.attributes || {};
-      const name = cfg.name || a.friendly_name || cfg.entity;
+      const name = ent.name || a.friendly_name || ent.entity;
       const room = a.current_temperature;
 
-      const zone = this._zones?.[cfg.entity];
+      const zone = this._zones?.[ent.entity];
       const climateOff = st.state === "off" || st.state === "unavailable";
       const mode = zone?.activeScheduleMode ?? null;
 
@@ -186,9 +196,8 @@
     }
 
     _render() {
-      if (!this._config || !this._hass) return;
+      if (!this._config) return;
       if (!this.shadowRoot) this.attachShadow({ mode: "open" });
-      const m = this._model();
 
       const STYLE = `
         <style>
@@ -197,6 +206,14 @@
             --nb-line:rgba(255,255,255,.06); --nb-line-2:rgba(255,255,255,.10);
             --nb-ink:#ecebe7; --nb-ink-2:#c2c0bb; --nb-ink-3:#8a8884; --nb-ink-4:#5e5d59;
           }
+          .ncs-tabs{ display:flex; gap:4px; padding:3px; margin:0 0 10px; background:rgba(255,255,255,.025);
+            border:1px solid var(--nb-line); border-radius:14px; width:fit-content; max-width:100%; overflow-x:auto; }
+          .ncs-tab{ appearance:none; border:0; cursor:pointer; display:inline-flex; align-items:center; padding:6px 11px;
+            border-radius:10px; background:transparent; color:var(--nb-ink-3); font:600 12px/1 inherit; white-space:nowrap;
+            transition:color .2s, background .2s; }
+          .ncs-tab:hover{ color:var(--nb-ink-2); }
+          .ncs-tab.is-active{ background:var(--nb-surface-2); color:var(--nb-ink);
+            box-shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 1px 2px rgba(0,0,0,.25); }
           ha-card{ display:block;
             background: linear-gradient(180deg, var(--nb-surface) 0%, #181a1e 100%);
             color: var(--nb-ink);
@@ -228,6 +245,16 @@
           .hatch{ background: repeating-linear-gradient(45deg, var(--nb-line-2), var(--nb-line-2) 6px, transparent 6px, transparent 12px); border:1px dashed var(--nb-line-2); }
           .neutral{ background: var(--nb-surface-2); }
         </style>`;
+
+      // Paint the themed shell immediately, before hass arrives, so the card
+      // never flashes the default (transparent) ha-card on first load/refresh.
+      if (!this._hass) {
+        this.shadowRoot.innerHTML = STYLE + `<ha-card><div class="wrap" style="min-height:78px"></div></ha-card>`;
+        return;
+      }
+
+      const activeEnt = this._entities[this._activeIndex] || this._entities[0];
+      const m = this._model(activeEnt);
 
       let body;
       if (m.error) {
@@ -281,21 +308,50 @@
         body = `<div class="wrap">${head}${track}</div>`;
       }
 
-      this.shadowRoot.innerHTML = STYLE + `<ha-card>${body}</ha-card>`;
+      const tabs = this._entities.length > 1
+        ? `<div class="ncs-tabs">${this._entities.map((e, i) => {
+            const label = e.name || this._hass?.states?.[e.entity]?.attributes?.friendly_name || e.entity;
+            return `<button class="ncs-tab ${i === this._activeIndex ? "is-active" : ""}" data-idx="${i}">${label}</button>`;
+          }).join("")}</div>`
+        : "";
+
+      this.shadowRoot.innerHTML = STYLE + tabs + `<ha-card>${body}</ha-card>`;
+
+      this.shadowRoot.querySelectorAll(".ncs-tab").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          this._activeIndex = Number.parseInt(btn.dataset.idx, 10) || 0;
+          this._render();
+        });
+      });
     }
   }
 
-  // --- GUI editor: pick a zone from the scheduler's configured zones ----------
+  // --- GUI editor: add/remove zones (tabs), one entry per zone ---------------
   class NimbusClimateSchedulerCardEditor extends HTMLElement {
-    setConfig(config) {
-      this._config = { ...config };
-      if (!this._built) this._build();
-      else this._sync(); // update values in place — never rebuild while editing
+    constructor() {
+      super();
+      this.attachShadow({ mode: "open" });
+      this._config = {};
+      this._dirty = false;
     }
+
+    setConfig(config) {
+      this._config = JSON.parse(JSON.stringify(config || {}));
+      // Normalize a single `entity` into the `entities` list the editor edits.
+      if (!Array.isArray(this._config.entities)) {
+        this._config.entities = this._config.entity
+          ? [{ entity: this._config.entity, name: this._config.name }]
+          : [];
+      }
+      delete this._config.entity;
+      delete this._config.name;
+      if (!this._dirty) this._render();
+    }
+
     set hass(hass) {
       this._hass = hass;
       this._maybeFetchZones();
-      if (!this._built) this._build();
+      if (!this._dirty) this._render();
     }
 
     async _maybeFetchZones() {
@@ -303,92 +359,124 @@
       this._zonesLoaded = true;
       try {
         const result = await this._hass.callWS({ type: WS_GET_ZONES });
-        this._zones = Object.keys(result?.zones ?? {});
+        this._zoneIds = Object.keys(result?.zones ?? {});
       } catch (err) {
-        this._zones = [];
+        this._zoneIds = [];
       }
-      this._populateEntity(); // swap the entity field only; leaves the name input (and its cursor) alone
+      if (!this._dirty) this._render();
     }
 
-    _emit() {
+    _dispatch() {
       this.dispatchEvent(new CustomEvent("config-changed", {
-        detail: { config: this._config },
-        bubbles: true,
-        composed: true,
+        detail: { config: this._config }, bubbles: true, composed: true,
       }));
     }
 
-    _build() {
-      if (!this._config) return;
+    _area(entityId) {
+      const ent = this._hass?.entities?.[entityId];
+      const areaId = ent?.area_id ?? (ent?.device_id ? this._hass?.devices?.[ent.device_id]?.area_id : null);
+      return areaId ? (this._hass?.areas?.[areaId]?.name || "") : "";
+    }
+
+    _render() {
       if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+      const entities = this._config.entities || [];
+      // Candidate zones: the scheduler's own zones if available, else any climate.*
+      const zoneIds = (this._zoneIds && this._zoneIds.length)
+        ? this._zoneIds
+        : (this._hass ? Object.keys(this._hass.states).filter((e) => e.startsWith("climate.")).sort() : []);
+      const friendly = (id) => this._hass?.states?.[id]?.attributes?.friendly_name || id;
+
       this.shadowRoot.innerHTML = `
         <style>
-          .form{ display:flex; flex-direction:column; gap:14px; padding:4px 2px; }
-          label{ display:flex; flex-direction:column; gap:6px; font-size:13px; color: var(--secondary-text-color, #666); }
-          select, input{ font-size:14px; padding:8px 10px; border-radius:8px;
-            border:1px solid var(--divider-color, #d6dadf);
-            background: var(--card-background-color, #fff); color: var(--primary-text-color, #1c1c1c); }
-          .hint{ font-size:12px; color: var(--secondary-text-color, #888); margin-top:-8px; }
+          * { box-sizing: border-box; }
+          .ed { font-family: -apple-system, system-ui, sans-serif; }
+          select, input { width: 100%; padding: 8px 10px; border-radius: 8px;
+            border: 1px solid #2a2c32; background: #131418; color: #ecebe7;
+            font-size: 13px; font-family: inherit; outline: none; }
+          input:focus, select:focus { border-color: oklch(0.78 0.16 45 / 0.5); }
+          .entry { background: #1b1d22; border: 1px solid #2a2c32; border-radius: 14px; margin-bottom: 10px; overflow: hidden; }
+          .entry-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #2a2c32; background: #131418; }
+          .entry-title { font-size: 13px; font-weight: 600; color: #ecebe7; }
+          .entry-sub { font-size: 11px; color: #5e5d59; }
+          .entry-head > div:first-child { flex: 1; min-width: 0; }
+          .rm-btn { width: 28px; height: 28px; border-radius: 7px; border: 1px solid #2a2c32; background: transparent;
+            color: #5e5d59; cursor: pointer; font-size: 13px; display: grid; place-items: center; flex-shrink: 0;
+            transition: color .2s, border-color .2s; }
+          .rm-btn:hover { color: #ecebe7; border-color: #555; }
+          .entry-body { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+          .field { display: flex; flex-direction: column; gap: 5px; }
+          .field-label { font-size: 10px; color: #5e5d59; text-transform: uppercase; letter-spacing: .06em; }
+          .add-btn { width: 100%; padding: 11px; border-radius: 12px; border: 1px dashed #2a2c32; background: transparent;
+            color: #5e5d59; cursor: pointer; font-size: 13px; transition: color .2s, border-color .2s; }
+          .add-btn:hover { color: #ecebe7; border-color: #555; }
+          .hint { font-size: 12px; color: #5e5d59; margin-top: 8px; }
         </style>
-        <div class="form">
-          <div id="entity-field"></div>
-          <label>Name (optional)
-            <input id="name" type="text" placeholder="overrides the entity name" />
-          </label>
+        <div class="ed">
+          ${entities.map((e, i) => {
+            const area = this._area(e.entity);
+            const display = e.name || area || (e.entity || "").replace("climate.", "") || "Zone";
+            const list = zoneIds.includes(e.entity) || !e.entity ? zoneIds : [e.entity, ...zoneIds];
+            const opts = list.map((id) => `<option value="${id}" ${id === e.entity ? "selected" : ""}>${friendly(id)}</option>`).join("");
+            return `<div class="entry">
+              <div class="entry-head">
+                <div>
+                  <div class="entry-title">${display}</div>
+                  <div class="entry-sub">${e.entity || "—"}</div>
+                </div>
+                <button class="rm-btn" data-remove="${i}" title="Remove">✕</button>
+              </div>
+              <div class="entry-body">
+                <div class="field">
+                  <span class="field-label">Zone (climate entity)</span>
+                  <select data-idx="${i}" data-field="entity"><option value="">— select —</option>${opts}</select>
+                </div>
+                <div class="field">
+                  <span class="field-label">Display name${area ? ` · area: ${area}` : ""}</span>
+                  <input type="text" data-idx="${i}" data-field="name" value="${e.name || ""}" placeholder="${area || "shown on the tab"}">
+                </div>
+              </div>
+            </div>`;
+          }).join("")}
+          <button class="add-btn" id="add-btn">+ Add zone</button>
+          ${entities.length > 1 ? `<div class="hint">Multiple zones show as tabs on the card.</div>` : ""}
         </div>`;
 
-      this._nameEl = this.shadowRoot.getElementById("name");
-      this._nameEl.value = this._config.name ?? "";
-      this._nameEl.addEventListener("input", () => {
-        const v = this._nameEl.value.trim();
-        if (v) this._config.name = v; else delete this._config.name;
-        this._emit();
+      this.shadowRoot.querySelectorAll("select[data-field]").forEach((sel) => {
+        sel.addEventListener("change", () => {
+          this._config.entities[parseInt(sel.dataset.idx, 10)][sel.dataset.field] = sel.value;
+          this._dispatch();
+          this._render();
+        });
       });
 
-      this._built = true;
-      this._populateEntity();
-    }
+      // Text inputs set _dirty so the config round-trip doesn't re-render and steal focus.
+      this.shadowRoot.querySelectorAll('input[type="text"]').forEach((inp) => {
+        inp.addEventListener("input", () => {
+          this._dirty = true;
+          this._config.entities[parseInt(inp.dataset.idx, 10)][inp.dataset.field] = inp.value;
+          this._dispatch();
+        });
+        inp.addEventListener("blur", () => { this._dirty = false; });
+      });
 
-    // (Re)render only the entity field — used on build and once zones arrive.
-    _populateEntity() {
-      if (!this._built) return;
-      const host = this.shadowRoot.getElementById("entity-field");
-      if (!host) return;
-      const zones = this._zones ?? null;
-      const current = this._config.entity ?? "";
-      const friendly = (id) => this._hass?.states?.[id]?.attributes?.friendly_name ?? id;
+      this.shadowRoot.querySelectorAll("[data-remove]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          this._config.entities.splice(parseInt(btn.dataset.remove, 10), 1);
+          this._dirty = false;
+          this._dispatch();
+          this._render();
+        });
+      });
 
-      if (zones && zones.length) {
-        const options = zones
-          .map((id) => `<option value="${id}" ${id === current ? "selected" : ""}>${friendly(id)}</option>`)
-          .join("");
-        host.innerHTML = `<label>Zone (climate entity)
-            <select id="entity"><option value="">— select —</option>${options}</select>
-          </label>`;
-      } else {
-        host.innerHTML = `<label>Zone (climate entity)
-            <input id="entity" type="text" value="${current}" placeholder="climate.nursery_thermostat" />
-          </label>
-          <div class="hint">${zones ? "No Nimbus zones found — set up the scheduler panel first, or type the climate entity id." : "Loading zones…"}</div>`;
-      }
-
-      const entityEl = this.shadowRoot.getElementById("entity");
-      const onEntity = () => {
-        const v = entityEl.value.trim();
-        if (v) this._config.entity = v; else delete this._config.entity;
-        this._emit();
-      };
-      entityEl.addEventListener("change", onEntity);
-      if (entityEl.tagName === "INPUT") entityEl.addEventListener("input", onEntity);
-    }
-
-    // Reflect config changes without recreating nodes, so focus/cursor survive.
-    _sync() {
-      if (!this._built) return;
-      const focused = this.shadowRoot.activeElement;
-      if (this._nameEl && focused !== this._nameEl) this._nameEl.value = this._config.name ?? "";
-      const entityEl = this.shadowRoot.getElementById("entity");
-      if (entityEl && focused !== entityEl) entityEl.value = this._config.entity ?? "";
+      this.shadowRoot.getElementById("add-btn").addEventListener("click", () => {
+        this._config.entities = this._config.entities || [];
+        const first = zoneIds[0] || "";
+        this._config.entities.push({ entity: first, name: this._area(first) || "" });
+        this._dirty = false;
+        this._dispatch();
+        this._render();
+      });
     }
   }
 
