@@ -28,6 +28,7 @@
   const REFRESH_SCHEDULE_MS = 5 * 60 * 1000;
   const TICK_MS = 30 * 1000;
   const WS_GET_ZONES = "nimbus_climate_scheduler/get_zones";
+  const PANEL_PATH = "/nimbus-climate-scheduler";
 
   const scheduleMinuteToClockMinute = (m) => (DAY_START_MINUTES + m) % DAY_LENGTH_MINUTES;
   const clockMinuteToScheduleMinute = (m) => (m - DAY_START_MINUTES + DAY_LENGTH_MINUTES) % DAY_LENGTH_MINUTES;
@@ -40,6 +41,10 @@
   const fmtTemp = (t) =>
     t == null || isNaN(t) ? "–" : (Math.round(t * 10) / 10).toString().replace(/\.0$/, "") + "°";
   const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+  const navigateTo = (path) => {
+    history.pushState(null, "", path);
+    window.dispatchEvent(new CustomEvent("location-changed", { bubbles: true, composed: true }));
+  };
 
   // Mirrors the backend get_schedule_point_for_time(), on one mode's savedWeek.
   function schedulePointForTime(savedWeek, now) {
@@ -63,8 +68,14 @@
     };
   }
 
-  const FLAME = '<path d="M12 23a7 7 0 0 0 7-7c0-2-1-4-3-6 .3 2-1 3-2 3 1-3-1-6-4-7 .5 3-1 4.5-2.5 6.3A6.9 6.9 0 0 0 5 16a7 7 0 0 0 7 7z"/>';
-  const SNOW = '<path d="M12 2v20M3.3 7l17.4 10M20.7 7L3.3 17" stroke-width="1.7" stroke-linecap="round" fill="none"/>';
+  // Mode accents + icons copied verbatim from the Nimbus Climate card MODES map,
+  // so the two cards share one visual language (accent colour + avatar glyph).
+  const MODE_META = {
+    heat: { accent: "oklch(0.78 0.16 45)", icon: "M12 2.5c.7 3.2 3 4.6 4 6.5 1.4 2.5 1.5 5.5-.4 7.8a6.4 6.4 0 0 1-9.7-.4C4 14 5 10.5 7.2 9c.4 1.1 1.3 1.7 2 1.7-.4-2 .3-5.4 2.8-8.2Z" },
+    cool: { accent: "oklch(0.78 0.13 235)", icon: "M12 3v18M5 6.5l14 11M5 17.5l14-11M12 6.5 9.5 4M12 6.5 14.5 4M12 17.5 9.5 20M12 17.5 14.5 20M5 12H2.5M5 12 3 9.5M5 12 3 14.5M21.5 12H19M19 12l2-2.5M19 12l2 2.5" },
+    off:  { accent: "oklch(0.72 0.01 60)", icon: "M12 3v9M5.5 7.5a8 8 0 1 0 13 0" },
+  };
+  const modeIconSvg = (s) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${s.split("M").filter(Boolean).map((p) => `<path d="M${p}"/>`).join("")}</svg>`;
 
   class NimbusClimateSchedulerCard extends HTMLElement {
     setConfig(config) {
@@ -201,6 +212,7 @@
 
       const STYLE = `
         <style>
+          *{ box-sizing:border-box; }
           :host{
             --nb-surface:#1b1d22; --nb-surface-2:#232529; --nb-surface-3:#2a2c32;
             --nb-line:rgba(255,255,255,.06); --nb-line-2:rgba(255,255,255,.10);
@@ -222,28 +234,42 @@
             box-shadow: none;
           }
           .wrap{ padding:18px 20px 16px; font-family: var(--ha-card-header-font-family, var(--mdc-typography-font-family, system-ui, -apple-system, "Segoe UI", sans-serif)); }
-          .head{ display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:16px; }
-          .zone{ font-size:15px; font-weight:600; margin-bottom:5px; color:var(--nb-ink); }
-          .chip{ display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600; padding:3px 8px; border-radius:20px; }
-          .chip svg{ width:12px; height:12px; }
-          .temp{ font-size:34px; font-weight:300; line-height:.9; letter-spacing:-.02em; text-align:right; color:var(--nb-ink); }
-          .delta{ font-size:11px; color:var(--nb-ink-3); margin-top:3px; text-align:right; }
+          .head{ display:flex; justify-content:space-between; align-items:center; gap:12px; }
+          .id{ display:flex; align-items:center; gap:12px; min-width:0; }
+          .avatar{ width:40px; height:40px; border-radius:13px; flex:none; display:grid; place-items:center;
+            color:var(--accent); border:1px solid color-mix(in oklch, var(--accent) 35%, transparent);
+            background: radial-gradient(120% 120% at 30% 20%, color-mix(in oklch, var(--accent) 22%, transparent), transparent 70%), var(--nb-surface-3); }
+          .avatar svg{ width:20px; height:20px; }
+          .name-row{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0; }
+          .name{ font-size:16px; font-weight:600; letter-spacing:-.01em; color:var(--nb-ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+          .pill{ flex:none; display:inline-flex; align-items:center; gap:6px; padding:5px 10px 5px 8px; border-radius:99px;
+            background: color-mix(in oklch, var(--accent) 14%, transparent); color:var(--accent);
+            border:1px solid color-mix(in oklch, var(--accent) 25%, transparent);
+            font-size:11px; font-weight:600; line-height:1; letter-spacing:.04em; text-transform:uppercase; }
+          .pill-dot{ width:5px; height:5px; border-radius:99px; background:var(--accent); flex:none; }
+          .sub{ margin-top:3px; font-size:11px; font-weight:500; color:var(--nb-ink-3); }
+          .temp{ font-size:34px; font-weight:300; line-height:.9; letter-spacing:-.02em; text-align:right; color:var(--nb-ink); flex:none; }
           .track{ position:relative; height:36px; border-radius:9px; display:flex; overflow:visible; }
           .seg{ display:flex; align-items:center; padding-left:12px; }
           .seg span{ font-size:13px; font-weight:700; color:rgba(0,0,0,.6); }
           .seam{ width:3px; background: var(--nb-surface); }
-          .marker{ position:absolute; top:-6px; bottom:-6px; width:2px; background:#fff; box-shadow:0 0 0 1.5px rgba(0,0,0,.55); border-radius:2px; z-index:3; }
-          .bubble{ position:absolute; top:-23px; left:50%; transform:translateX(-50%);
+          .marker{ position:absolute; top:-5px; bottom:-5px; width:2px; background:#fff; box-shadow:0 0 0 1.5px rgba(0,0,0,.55); border-radius:2px; z-index:3; }
+          .bubble{ position:absolute; bottom:calc(100% + 6px); transform:translateX(-50%); z-index:4;
             background: var(--nb-surface-3); color: var(--nb-ink);
             border:1px solid var(--nb-line-2);
             box-shadow:0 1px 4px rgba(0,0,0,.4); font-size:11px; font-weight:600; line-height:1;
             padding:4px 7px; border-radius:6px; white-space:nowrap; }
+          .caret{ position:absolute; transform:translateX(-50%); bottom:calc(100% + 1px); z-index:4;
+            width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent;
+            border-top:5px solid var(--nb-surface-3); }
           .axis{ position:relative; height:14px; margin-top:7px; font-size:10px; color:var(--nb-ink-3); }
           .axis .l{ position:absolute; left:0; }
           .axis .c{ position:absolute; transform:translateX(-50%); font-weight:600; }
           .flat{ height:36px; border-radius:9px; display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--nb-ink-3); }
           .hatch{ background: repeating-linear-gradient(45deg, var(--nb-line-2), var(--nb-line-2) 6px, transparent 6px, transparent 12px); border:1px dashed var(--nb-line-2); }
           .neutral{ background: var(--nb-surface-2); }
+          .open{ position:absolute; right:0; top:0; font-size:10px; color:var(--nb-ink-4); cursor:pointer; letter-spacing:.05em; text-transform:uppercase; transition:color .2s; }
+          .open:hover{ color:var(--nb-ink-2); }
         </style>`;
 
       // Paint the themed shell immediately, before hass arrives, so the card
@@ -260,29 +286,44 @@
       if (m.error) {
         body = `<div class="wrap"><div class="zone">Nimbus</div><div class="flat neutral">${m.error}</div></div>`;
       } else {
-        const accentHeat = "oklch(0.78 0.16 45)";
-        const accentCool = "#52dce9";
-        const isCool = m.mode === "cool";
-        const accent = m.state === "off"
-          ? "var(--nb-ink-4)"
-          : isCool ? accentCool : accentHeat;
-        const icon = isCool ? SNOW : FLAME;
-        const fillAttr = isCool ? `fill="none" stroke="${accent}"` : `fill="${accent}"`;
-        const modeLabel = m.state === "off" ? "Off" : m.state === "idle" ? "Idle" : isCool ? "Cooling" : "Heating";
+        const metaKey = m.state === "off" ? "off" : (m.mode || "off");
+        const meta = MODE_META[metaKey] || MODE_META.off;
+        const accent = meta.accent;
+        const modeLabel = m.state === "off" ? "Off" : m.state === "idle" ? "Idle" : m.mode === "cool" ? "Cooling" : "Heating";
 
-        const chip = `<div class="chip" style="background:color-mix(in srgb, ${accent} 16%, transparent); color:${accent};">
-            <svg viewBox="0 0 24 24" ${fillAttr}>${icon}</svg>${modeLabel}</div>`;
+        let status;
+        if (m.state === "off") status = "schedule off";
+        else if (m.state === "idle") status = "no schedule today";
+        else {
+          const sp = m.cur?.temp;
+          if (sp != null && m.room != null) {
+            const d = sp - m.room;
+            status = ((m.mode === "heat" && d > 0.2) || (m.mode === "cool" && d < -0.2)) ? `→ ${fmtTemp(sp)}` : `holding ${fmtTemp(sp)}`;
+          } else status = "";
+        }
 
-        const head = `<div class="head">
-            <div><div class="zone">${m.name}</div>${chip}</div>
-            <div><div class="temp">${fmtTemp(m.room)}</div><div class="delta">${m.state === "off" ? "schedule off" : this._deltaText(m)}</div></div>
+        const pill = `<span class="pill"><span class="pill-dot"></span>${modeLabel}</span>`;
+        // Active state floats a now-bubble above the track — give it clearance so it
+        // never lands on the avatar/header; off/idle have no bubble, so stay compact.
+        const headGap = m.state === "active" ? "34px" : "14px";
+
+        const head = `<div class="head" data-state="${m.state}" style="--accent:${accent}; margin-bottom:${headGap};">
+            <div class="id">
+              <div class="avatar">${modeIconSvg(meta.icon)}</div>
+              <div style="min-width:0;">
+                <div class="name-row"><div class="name">${m.name}</div>${pill}</div>
+                <div class="sub">${status}</div>
+              </div>
+            </div>
+            <div class="temp">${fmtTemp(m.room)}</div>
           </div>`;
 
+        const openLink = `<span class="open" id="open-sched">open scheduler</span>`;
         let track;
         if (m.state === "off") {
-          track = `<div class="flat hatch"></div><div class="axis"><span class="l">Schedule off</span></div>`;
+          track = `<div class="flat hatch"></div><div class="axis"><span class="l">Schedule off</span>${openLink}</div>`;
         } else if (m.state === "idle") {
-          track = `<div class="flat neutral">No schedule today</div><div class="axis"><span class="l">Awaiting next setpoint</span></div>`;
+          track = `<div class="flat neutral">No schedule today</div><div class="axis"><span class="l">Awaiting next setpoint</span>${openLink}</div>`;
         } else {
           const curColor = this._colorForTemp(m.cur.temp, m.mode);
           const nextColor = m.hasNext ? this._colorForTemp(m.next.temp, m.mode) : curColor;
@@ -292,7 +333,11 @@
           const nextSeg = m.hasNext
             ? `<div class="seam"></div><div class="seg" style="flex:1; background:${nextColor}; border-radius:0 9px 9px 0;"><span>${fmtTemp(m.next.temp)}</span></div>`
             : "";
-          const marker = `<div class="marker" style="left:${markerLeft}%;"><div class="bubble">${fmtHM(m.nowClock)}</div></div>`;
+          // Line + caret sit exactly on the marker; the bubble is clamped (min-inset)
+          // so it never overhangs the card edge — it just shifts right near the start.
+          const marker = `<div class="marker" style="left:${markerLeft}%;"></div>
+            <div class="bubble" style="left:clamp(28px, ${markerLeft}%, calc(100% - 28px));">${fmtHM(m.nowClock)}</div>
+            <div class="caret" style="left:${markerLeft}%;"></div>`;
           const axisRight = m.hasNext
             ? `<span class="c" style="left:${curW}%; color:${nextColor};">${fmtTemp(m.next.temp)} at ${fmtHM(m.nextClock)}</span>`
             : `<span class="c" style="left:100%; transform:translateX(-100%);">no more changes today</span>`;
@@ -302,7 +347,7 @@
               ${nextSeg}
               ${marker}
             </div>
-            <div class="axis"><span class="l">since ${fmtHM(m.curStartClock)}</span>${axisRight}</div>`;
+            <div class="axis"><span class="l">since ${fmtHM(m.curStartClock)}</span>${axisRight}${openLink}</div>`;
         }
 
         body = `<div class="wrap">${head}${track}</div>`;
@@ -323,6 +368,9 @@
           this._render();
         });
       });
+
+      const openEl = this.shadowRoot.getElementById("open-sched");
+      if (openEl) openEl.addEventListener("click", () => navigateTo(PANEL_PATH));
     }
   }
 

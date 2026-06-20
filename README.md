@@ -27,13 +27,54 @@ Assistant all those characteristics I love:
 - There are **5 setpoints per day**, which you can drag however you like on the
   timeline, and set a cool/heat temperature for each setpoint separately.
 
-Trying to make this real while having another profession with a full-time job,
-and being a dad to two toddlers, makes it hard to share something that really
-works. I've spent hours debugging, and I'd appreciate it if you were polite in
-the comments. I'm genuinely glad to hear your responses — and your corrections
-or additions that will make it even better.
+Building this around a full-time job in another profession and two toddlers
+isn't easy — I've spent a lot of hours debugging. I'd genuinely love your
+feedback, and any corrections or additions that make it better are very welcome.
 
 — **@maxfok**
+
+## Dashboard card
+
+Sometimes you just want to know what the heating is supposed to be doing right
+now.
+
+The built-in read-only dashboard card shows the current and next setpoints on the
+familiar colored schedule timeline, complete with a marker that smoothly follows
+the current time throughout the day.
+
+Use it with a single zone for a compact overview, or add multiple zones to get
+convenient tabs for quick switching between rooms.
+
+![Nimbus Climate Scheduler card — heating](docs/card-heating.png)
+
+| Cooling | Schedule off |
+| --- | --- |
+| ![Cooling](docs/card-cooling.png) | ![Off](docs/card-off-single.png) |
+
+The card loads automatically once the integration is set up — there's no
+Lovelace resource to add. Drop it on a dashboard with a single zone:
+
+```yaml
+type: custom:nimbus-climate-scheduler-card
+entity: climate.nursery_thermostat
+```
+
+…or list several zones to get tabs:
+
+```yaml
+type: custom:nimbus-climate-scheduler-card
+entities:
+  - climate.bedroom_thermostat
+  - climate.nursery_thermostat
+  - climate.kitchen_thermostat
+```
+
+Adding it from the dashboard UI works too — it shows up as *Nimbus Climate
+Scheduler Card* with a built-in editor. Tap **open scheduler** on the card to
+jump to the panel.
+
+> **Companion card** — for full thermostat control (modes, target, live graph)
+> see [Nimbus Climate card](https://github.com/maxfok/nimbus-climate-card).
 
 ## Under the hood
 

@@ -73,7 +73,7 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     super();
     this.root = this.attachShadow({ mode: "open" });
     this.selectedZoneId = null;
-    this.selectedDay = "Fri";
+    this.selectedDay = null;
     this.activeDrag = null;
     this.timeBubble = null;
     this.pendingNavigation = null;
