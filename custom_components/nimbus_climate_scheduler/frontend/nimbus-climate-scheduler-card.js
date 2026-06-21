@@ -77,6 +77,33 @@
   };
   const modeIconSvg = (s) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${s.split("M").filter(Boolean).map((p) => `<path d="M${p}"/>`).join("")}</svg>`;
 
+  // --- i18n -------------------------------------------------------------------
+  // Card strings by language. To add one: copy the `en` block, translate the
+  // values, key it by the 2-letter language code (e.g. "fr"). PRs welcome!
+  // Placeholders: {t} = temperature, {e} = entity id. The "→" arrow, clock times
+  // and temperatures stay in code (language-neutral).
+  const TRANSLATIONS = {
+    en: { heating: "Heating", cooling: "Cooling", off: "Off", idle: "Idle",
+      holding: "holding {t}", scheduleOff: "schedule off", scheduleOffLabel: "Schedule off",
+      noSchedule: "no schedule today", noScheduleLabel: "No schedule today",
+      awaiting: "Awaiting next setpoint", since: "since {t}", at: "at",
+      noMore: "no more changes today", openScheduler: "open scheduler",
+      notFound: "Entity not found: {e}" },
+    nl: { heating: "Verwarmen", cooling: "Koelen", off: "Uit", idle: "Inactief",
+      holding: "blijft op {t}", scheduleOff: "schema uit", scheduleOffLabel: "Schema uit",
+      noSchedule: "geen schema vandaag", noScheduleLabel: "Geen schema vandaag",
+      awaiting: "Wachten op volgend instelpunt", since: "sinds {t}", at: "om",
+      noMore: "geen wijzigingen meer vandaag", openScheduler: "planner openen",
+      notFound: "Entiteit niet gevonden: {e}" },
+    de: { heating: "Heizen", cooling: "Kühlen", off: "Aus", idle: "Inaktiv",
+      holding: "hält {t}", scheduleOff: "Zeitplan aus", scheduleOffLabel: "Zeitplan aus",
+      noSchedule: "kein Zeitplan heute", noScheduleLabel: "Kein Zeitplan heute",
+      awaiting: "Warte auf nächsten Sollwert", since: "seit {t}", at: "um",
+      noMore: "keine weiteren Änderungen heute", openScheduler: "Planer öffnen",
+      notFound: "Entität nicht gefunden: {e}" },
+  };
+  const getT = (hass) => TRANSLATIONS[(hass?.language || "en").split("-")[0]] || TRANSLATIONS.en;
+
   class NimbusClimateSchedulerCard extends HTMLElement {
     setConfig(config) {
       if (!config) throw new Error("nimbus-climate-scheduler-card: config is required");
@@ -153,7 +180,7 @@
     _model(ent) {
       const hass = this._hass;
       const st = hass?.states?.[ent.entity];
-      if (!st) return { error: `Entity not found: ${ent.entity}` };
+      if (!st) return { error: true, notFound: ent.entity };
       const a = st.attributes || {};
       const name = ent.name || a.friendly_name || ent.entity;
       const room = a.current_temperature;
@@ -233,7 +260,7 @@
             border-radius: 20px;
             box-shadow: none;
           }
-          .wrap{ padding:18px 20px 16px; font-family: var(--ha-card-header-font-family, var(--mdc-typography-font-family, system-ui, -apple-system, "Segoe UI", sans-serif)); }
+          .wrap{ padding:18px 20px 16px; container-type:inline-size; font-family: var(--ha-card-header-font-family, var(--mdc-typography-font-family, system-ui, -apple-system, "Segoe UI", sans-serif)); }
           .head{ display:flex; justify-content:space-between; align-items:center; gap:12px; }
           .id{ display:flex; align-items:center; gap:12px; min-width:0; }
           .avatar{ width:40px; height:40px; border-radius:13px; flex:none; display:grid; place-items:center;
@@ -270,6 +297,11 @@
           .neutral{ background: var(--nb-surface-2); }
           .open{ position:absolute; right:0; top:0; font-size:10px; color:var(--nb-ink-4); cursor:pointer; letter-spacing:.05em; text-transform:uppercase; transition:color .2s; }
           .open:hover{ color:var(--nb-ink-2); }
+          .open-icon{ display:none; font-size:13px; line-height:1; letter-spacing:0; top:-2px; }
+          @container (max-width: 430px){
+            .open-text{ display:none; }
+            .open-icon{ display:block; }
+          }
         </style>`;
 
       // Paint the themed shell immediately, before hass arrives, so the card
@@ -281,24 +313,25 @@
 
       const activeEnt = this._entities[this._activeIndex] || this._entities[0];
       const m = this._model(activeEnt);
+      const t = getT(this._hass);
 
       let body;
       if (m.error) {
-        body = `<div class="wrap"><div class="zone">Nimbus</div><div class="flat neutral">${m.error}</div></div>`;
+        body = `<div class="wrap"><div class="flat neutral">${t.notFound.replace("{e}", m.notFound)}</div></div>`;
       } else {
         const metaKey = m.state === "off" ? "off" : (m.mode || "off");
         const meta = MODE_META[metaKey] || MODE_META.off;
         const accent = meta.accent;
-        const modeLabel = m.state === "off" ? "Off" : m.state === "idle" ? "Idle" : m.mode === "cool" ? "Cooling" : "Heating";
+        const modeLabel = m.state === "off" ? t.off : m.state === "idle" ? t.idle : m.mode === "cool" ? t.cooling : t.heating;
 
         let status;
-        if (m.state === "off") status = "schedule off";
-        else if (m.state === "idle") status = "no schedule today";
+        if (m.state === "off") status = t.scheduleOff;
+        else if (m.state === "idle") status = t.noSchedule;
         else {
           const sp = m.cur?.temp;
           if (sp != null && m.room != null) {
             const d = sp - m.room;
-            status = ((m.mode === "heat" && d > 0.2) || (m.mode === "cool" && d < -0.2)) ? `→ ${fmtTemp(sp)}` : `holding ${fmtTemp(sp)}`;
+            status = ((m.mode === "heat" && d > 0.2) || (m.mode === "cool" && d < -0.2)) ? `→ ${fmtTemp(sp)}` : t.holding.replace("{t}", fmtTemp(sp));
           } else status = "";
         }
 
@@ -318,12 +351,12 @@
             <div class="temp">${fmtTemp(m.room)}</div>
           </div>`;
 
-        const openLink = `<span class="open" id="open-sched">open scheduler</span>`;
+        const openLink = `<span class="open open-text">${t.openScheduler}</span><span class="open open-icon" aria-label="${t.openScheduler}" role="button">↗</span>`;
         let track;
         if (m.state === "off") {
-          track = `<div class="flat hatch"></div><div class="axis"><span class="l">Schedule off</span>${openLink}</div>`;
+          track = `<div class="flat hatch"></div><div class="axis"><span class="l">${t.scheduleOffLabel}</span>${openLink}</div>`;
         } else if (m.state === "idle") {
-          track = `<div class="flat neutral">No schedule today</div><div class="axis"><span class="l">Awaiting next setpoint</span>${openLink}</div>`;
+          track = `<div class="flat neutral">${t.noScheduleLabel}</div><div class="axis"><span class="l">${t.awaiting}</span>${openLink}</div>`;
         } else {
           const curColor = this._colorForTemp(m.cur.temp, m.mode);
           const nextColor = m.hasNext ? this._colorForTemp(m.next.temp, m.mode) : curColor;
@@ -339,15 +372,15 @@
             <div class="bubble" style="left:clamp(28px, ${markerLeft}%, calc(100% - 28px));">${fmtHM(m.nowClock)}</div>
             <div class="caret" style="left:${markerLeft}%;"></div>`;
           const axisRight = m.hasNext
-            ? `<span class="c" style="left:${curW}%; color:${nextColor};">${fmtTemp(m.next.temp)} at ${fmtHM(m.nextClock)}</span>`
-            : `<span class="c" style="left:100%; transform:translateX(-100%);">no more changes today</span>`;
+            ? `<span class="c" style="left:${curW}%; color:${nextColor};">${fmtTemp(m.next.temp)} ${t.at} ${fmtHM(m.nextClock)}</span>`
+            : `<span class="c" style="left:100%; transform:translateX(-100%);">${t.noMore}</span>`;
 
           track = `<div class="track">
               <div class="seg" style="flex:0 0 ${curW}%; background:${curColor}; border-radius:9px 0 0 9px;"><span>${fmtTemp(m.cur.temp)}</span></div>
               ${nextSeg}
               ${marker}
             </div>
-            <div class="axis"><span class="l">since ${fmtHM(m.curStartClock)}</span>${axisRight}${openLink}</div>`;
+            <div class="axis"><span class="l">${t.since.replace("{t}", fmtHM(m.curStartClock))}</span>${axisRight}${openLink}</div>`;
         }
 
         body = `<div class="wrap">${head}${track}</div>`;
@@ -369,8 +402,7 @@
         });
       });
 
-      const openEl = this.shadowRoot.getElementById("open-sched");
-      if (openEl) openEl.addEventListener("click", () => navigateTo(PANEL_PATH));
+      this.shadowRoot.querySelectorAll(".open").forEach((el) => el.addEventListener("click", () => navigateTo(PANEL_PATH)));
     }
   }
 
