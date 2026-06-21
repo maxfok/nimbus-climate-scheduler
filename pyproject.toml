@@ -1,0 +1,12 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+branch = true
+source = ["custom_components/nimbus_climate_scheduler"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

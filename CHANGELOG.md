@@ -1,5 +1,19 @@
 # Nimbus Climate Scheduler — Change Log
 
+## 2026-06-21 · Safety review + automated tests (v0.2.10)
+
+- Hardened websocket permissions and schedule payload validation.
+- Isolated per-zone scheduler failures so one thermostat cannot block the rest.
+- Serialized explicit save-and-apply calls while skipping overlapping periodic
+  ticks, preventing both stale applies and interval-task backlogs.
+- Kept disabled schedules strictly hands-off in the frontend fallback.
+- Added backend retry recovery and complete panel connect/disconnect cleanup.
+- Validated grouped thermostat capabilities; incompatible groups are disabled
+  instead of receiving partial or invalid service calls.
+- Fixed dashboard-card escaping, next-day setpoint display, periodic refresh and
+  single-entity `name:` overrides.
+- Added 8 Python and 8 frontend regression tests plus GitHub Actions CI.
+
 ## 2026-06-10 · Integration review fixes (v0.1.0)
 
 ### Κρίσιμα

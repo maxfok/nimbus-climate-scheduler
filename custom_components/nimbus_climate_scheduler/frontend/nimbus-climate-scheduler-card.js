@@ -41,10 +41,31 @@
   const fmtTemp = (t) =>
     t == null || isNaN(t) ? "–" : (Math.round(t * 10) / 10).toString().replace(/\.0$/, "") + "°";
   const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+  // Escape user-controlled strings (zone names, friendly names, entity ids)
+  // before they go into innerHTML, to prevent HTML/attribute injection.
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const navigateTo = (path) => {
     history.pushState(null, "", path);
     window.dispatchEvent(new CustomEvent("location-changed", { bubbles: true, composed: true }));
   };
+
+  // Walk forward to the idx-th setpoint from a day, crossing into the next
+  // schedule day(s), so the "next" after the last setpoint of the day reflects
+  // tomorrow's first setpoint (at 05:00) instead of today's first.
+  function upcomingSetpoint(savedWeek, dayIndex, idx) {
+    let di = dayIndex, i = idx, guard = 0;
+    while (guard < 8) {
+      const sp = savedWeek?.[DAYS[di]];
+      if (Array.isArray(sp) && sp.length) {
+        if (i < sp.length) return sp[i];
+        i -= sp.length;
+      }
+      di = (di + 1) % 7;
+      guard += 1;
+    }
+    return null;
+  }
 
   // Mirrors the backend get_schedule_point_for_time(), on one mode's savedWeek.
   function schedulePointForTime(savedWeek, now) {
@@ -62,7 +83,7 @@
     const len = setpoints.length;
     return {
       current: setpoints[activeIndex],
-      next: setpoints[(activeIndex + 1) % len],
+      next: upcomingSetpoint(savedWeek, dayIndex, activeIndex + 1) ?? setpoints[0],
       scheduleMinute,
       single: len === 1,
     };
@@ -110,7 +131,7 @@
       // Accept a single `entity` or a list of `entities` (each a string or {entity, name}).
       const raw = Array.isArray(config.entities) && config.entities.length
         ? config.entities
-        : (config.entity ? [config.entity] : []);
+        : (config.entity ? [{ entity: config.entity, name: config.name }] : []);
       const entities = raw
         .map((e) => (typeof e === "string" ? { entity: e } : { entity: e?.entity, name: e?.name }))
         .filter((e) => e.entity);
@@ -130,7 +151,10 @@
     get hass() { return this._hass; }
 
     connectedCallback() {
-      this._timer = setInterval(() => this._render(), TICK_MS);
+      this._timer = setInterval(() => {
+        this._maybeFetchZones(); // own REFRESH_SCHEDULE_MS guard — refetches at most every 5 min
+        this._render();
+      }, TICK_MS);
     }
     disconnectedCallback() {
       if (this._timer) clearInterval(this._timer);
@@ -317,7 +341,7 @@
 
       let body;
       if (m.error) {
-        body = `<div class="wrap"><div class="flat neutral">${t.notFound.replace("{e}", m.notFound)}</div></div>`;
+        body = `<div class="wrap"><div class="flat neutral">${t.notFound.replace("{e}", esc(m.notFound))}</div></div>`;
       } else {
         const metaKey = m.state === "off" ? "off" : (m.mode || "off");
         const meta = MODE_META[metaKey] || MODE_META.off;
@@ -344,7 +368,7 @@
             <div class="id">
               <div class="avatar">${modeIconSvg(meta.icon)}</div>
               <div style="min-width:0;">
-                <div class="name-row"><div class="name">${m.name}</div>${pill}</div>
+                <div class="name-row"><div class="name">${esc(m.name)}</div>${pill}</div>
                 <div class="sub">${status}</div>
               </div>
             </div>
@@ -389,7 +413,7 @@
       const tabs = this._entities.length > 1
         ? `<div class="ncs-tabs">${this._entities.map((e, i) => {
             const label = e.name || this._hass?.states?.[e.entity]?.attributes?.friendly_name || e.entity;
-            return `<button class="ncs-tab ${i === this._activeIndex ? "is-active" : ""}" data-idx="${i}">${label}</button>`;
+            return `<button class="ncs-tab ${i === this._activeIndex ? "is-active" : ""}" data-idx="${i}">${esc(label)}</button>`;
           }).join("")}</div>`
         : "";
 
@@ -497,12 +521,12 @@
             const area = this._area(e.entity);
             const display = e.name || area || (e.entity || "").replace("climate.", "") || "Zone";
             const list = zoneIds.includes(e.entity) || !e.entity ? zoneIds : [e.entity, ...zoneIds];
-            const opts = list.map((id) => `<option value="${id}" ${id === e.entity ? "selected" : ""}>${friendly(id)}</option>`).join("");
+            const opts = list.map((id) => `<option value="${esc(id)}" ${id === e.entity ? "selected" : ""}>${esc(friendly(id))}</option>`).join("");
             return `<div class="entry">
               <div class="entry-head">
                 <div>
-                  <div class="entry-title">${display}</div>
-                  <div class="entry-sub">${e.entity || "—"}</div>
+                  <div class="entry-title">${esc(display)}</div>
+                  <div class="entry-sub">${e.entity ? esc(e.entity) : "—"}</div>
                 </div>
                 <button class="rm-btn" data-remove="${i}" title="Remove">✕</button>
               </div>
@@ -512,8 +536,8 @@
                   <select data-idx="${i}" data-field="entity"><option value="">— select —</option>${opts}</select>
                 </div>
                 <div class="field">
-                  <span class="field-label">Display name${area ? ` · area: ${area}` : ""}</span>
-                  <input type="text" data-idx="${i}" data-field="name" value="${e.name || ""}" placeholder="${area || "shown on the tab"}">
+                  <span class="field-label">Display name${area ? ` · area: ${esc(area)}` : ""}</span>
+                  <input type="text" data-idx="${i}" data-field="name" value="${esc(e.name || "")}" placeholder="${esc(area) || "shown on the tab"}">
                 </div>
               </div>
             </div>`;

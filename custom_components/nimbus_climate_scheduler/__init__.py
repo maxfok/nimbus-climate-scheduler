@@ -138,7 +138,7 @@ async def _async_setup_scheduler(
         sidebar_title=PANEL_TITLE,
         sidebar_icon=PANEL_ICON,
         module_url=PANEL_MODULE_URL,
-        require_admin=False,
+        require_admin=True,
         config={
             "domain": DOMAIN,
             CONF_CLIMATES: [

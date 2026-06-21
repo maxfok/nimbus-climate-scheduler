@@ -130,3 +130,22 @@ That's it — no YAML required.
 - Tested at home on Z-Wave thermostats (heat + cool), and on a separate heat-only
   setup. It's a hobby project I run in my own house — use it at your own risk,
   and please open an issue if something misbehaves.
+
+## Development and tests
+
+Backend tests use the Home Assistant custom-component pytest harness:
+
+```bash
+uv venv --python 3.14
+uv pip install --python .venv/bin/python -r requirements_test.txt
+.venv/bin/pytest --cov
+```
+
+Frontend card and panel tests use Vitest with jsdom:
+
+```bash
+npm ci
+npm test
+```
+
+Both suites also run automatically for every push and pull request.

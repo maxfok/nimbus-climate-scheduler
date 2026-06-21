@@ -53,14 +53,14 @@ class NimbusClimateScheduler:
         self.scan_interval = max(10, int(scan_interval or DEFAULT_SCAN_INTERVAL))
         self.last_run: str | None = None
         self._remove_interval = None
-        self._running = False
+        self._lock = asyncio.Lock()
 
     def start(self) -> None:
         """Start the backend scheduler loop."""
         self.stop()
         self._remove_interval = async_track_time_interval(
             self.hass,
-            self.async_tick,
+            self._async_periodic_tick,
             timedelta(seconds=self.scan_interval),
         )
         self.hass.async_create_task(self.async_tick())
@@ -71,28 +71,48 @@ class NimbusClimateScheduler:
             self._remove_interval()
             self._remove_interval = None
 
-    async def async_tick(self, now=None) -> dict[str, Any]:
-        """Apply all configured zones once. Returns what was applied."""
-        if self._running:
-            return {"applied": [], "running": True}
+    async def _async_periodic_tick(self, now=None) -> dict[str, Any]:
+        """Run a scheduled tick, skipping it when another tick is active."""
+        if self._lock.locked():
+            return {"applied": [], "failed": [], "running": True}
+        return await self.async_tick(now)
 
-        self._running = True
+    async def async_tick(self, now=None) -> dict[str, Any]:
+        """Apply all configured zones once, waiting for any active tick.
+
+        Explicit save-and-apply calls use this path so they run immediately after
+        an in-progress periodic tick. Periodic callbacks use
+        _async_periodic_tick() and are skipped instead of accumulating.
+        """
         applied: list[str] = []
-        try:
+        failed: list[str] = []
+        async with self._lock:
             now = now or dt_util.now()
-            plans = [
-                plan
-                for entity_id in self.scheduled_entity_ids()
-                if (plan := self.build_plan(entity_id, now)) is not None
-            ]
+            plans = []
+            for entity_id in self.scheduled_entity_ids():
+                try:
+                    plan = self.build_plan(entity_id, now)
+                except Exception:  # noqa: BLE001 — bad data for one zone must not crash the tick
+                    failed.append(entity_id)
+                    _LOGGER.warning(
+                        "Nimbus scheduler skipped %s (could not build plan)", entity_id, exc_info=True
+                    )
+                    continue
+                if plan is not None:
+                    plans.append(plan)
             for plan in plans:
-                if self.plan_needs_apply(plan):
+                if not self.plan_needs_apply(plan):
+                    continue
+                try:
                     await self.async_apply_plan(plan)
                     applied.append(plan.entity_id)
+                except Exception:  # noqa: BLE001 — one bad zone must not block the others
+                    failed.append(plan.entity_id)
+                    _LOGGER.warning(
+                        "Nimbus scheduler could not apply %s", plan.entity_id, exc_info=True
+                    )
             self.last_run = dt_util.utcnow().isoformat()
-        finally:
-            self._running = False
-        return {"applied": applied, "running": False}
+        return {"applied": applied, "failed": failed, "running": False}
 
     def scheduled_entity_ids(self) -> list[str]:
         """Return configured and storage-backed climate entity ids."""

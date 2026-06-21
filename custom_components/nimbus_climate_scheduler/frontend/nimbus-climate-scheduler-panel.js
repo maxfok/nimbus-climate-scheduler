@@ -95,6 +95,7 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     this.zones = this.adoptZones(createDemoZones());
     this.onPointerMove = this.onPointerMove.bind(this);
     this.stopDrag = this.stopDrag.bind(this);
+    this.onNarrowMediaChange = this.updateNarrow.bind(this);
   }
 
   set hass(hass) {
@@ -140,12 +141,13 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
   }
 
   connectedCallback() {
-    if (this.isConnectedOnce) return;
-
-    this.isConnectedOnce = true;
-    this.root.innerHTML = PANEL_HTML;
-    this.cacheElements();
-    this.setupEvents();
+    if (!this.isConnectedOnce) {
+      this.isConnectedOnce = true;
+      this.root.innerHTML = PANEL_HTML;
+      this.cacheElements();
+      this.setupEvents();
+    }
+    this.setupConnectionEvents();
     this.syncZonesFromHass();
     this.ensureBackendSync();
     this.startScheduler();
@@ -156,6 +158,8 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     window.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("pointerup", this.stopDrag);
     window.removeEventListener("pointercancel", this.stopDrag);
+    this.narrowMedia?.removeEventListener("change", this.onNarrowMediaChange);
+    window.clearTimeout(this._backendRetryTimer);
     this.stopScheduler();
     this.hideBubble();
   }
@@ -174,9 +178,6 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
   }
 
   setupEvents() {
-    window.addEventListener("pointermove", this.onPointerMove);
-    window.addEventListener("pointerup", this.stopDrag);
-    window.addEventListener("pointercancel", this.stopDrag);
     this.setupButton.addEventListener("click", () => this.openSetup());
     this.menuButton.addEventListener("click", () => {
       this.dispatchEvent(new CustomEvent("hass-toggle-menu", { bubbles: true, composed: true }));
@@ -194,7 +195,13 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     });
 
     this.narrowMedia = window.matchMedia("(max-width: 760px)");
-    this.narrowMedia.addEventListener("change", () => this.updateNarrow());
+  }
+
+  setupConnectionEvents() {
+    window.addEventListener("pointermove", this.onPointerMove);
+    window.addEventListener("pointerup", this.stopDrag);
+    window.addEventListener("pointercancel", this.stopDrag);
+    this.narrowMedia?.addEventListener("change", this.onNarrowMediaChange);
     this.updateNarrow();
   }
 
@@ -314,6 +321,13 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
       await this.pushAllSchedulesToBackend();
     } catch {
       this.backendSyncComplete = false;
+      // Don't get stuck in the frontend fallback forever — allow a retry so the
+      // panel reconnects to the backend scheduler instead of competing with it.
+      this.backendSyncStarted = false;
+      window.clearTimeout(this._backendRetryTimer);
+      this._backendRetryTimer = window.setTimeout(() => {
+        if (this.isConnected) this.ensureBackendSync();
+      }, 5000);
     }
   }
 
@@ -544,10 +558,15 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     label.textContent = "Status:";
 
     const unavailable = zone.unavailableEntities ?? [];
+    const capabilityIssues = zone.capabilityIssues ?? [];
+    const issues = [
+      ...(unavailable.length ? [`Unavailable: ${unavailable.join(", ")}`] : []),
+      ...capabilityIssues,
+    ];
     const value = document.createElement("span");
-    value.className = `zone-status-value${unavailable.length ? " warn" : ""}`;
-    value.textContent = unavailable.length
-      ? `⚠ Unavailable: ${unavailable.join(", ")}`
+    value.className = `zone-status-value${issues.length ? " warn" : ""}`;
+    value.textContent = issues.length
+      ? `⚠ ${issues.join(" · ")}`
       : "ℹ️ All thermostats are properly supported";
 
     row.append(label, value);
@@ -576,20 +595,48 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     if (!state) return null;
     const stored = loadStoredEntitySchedule(config.entity);
 
-    const supportedModes = this.getSupportedScheduleModes(state);
+    const entityIds = group?.entityIds ?? [config.entity];
+    // A service call targets ALL grouped entities, so capabilities must be the
+    // SAFE INTERSECTION across them — modes common to all, tightest temp range,
+    // coarsest step — not just the first entity's. Avoids failures / partial
+    // apply on mixed groups (e.g. heat-only + heat-cool, or different limits).
+    const capStates = entityIds.map((id) => this._hass.states[id]).filter(Boolean);
+    if (!capStates.length) capStates.push(state);
+    const modeLists = capStates.map((s) => this.getSupportedScheduleModes(s));
+    const supportedModes = modeLists.reduce(
+      (acc, list) => acc.filter((m) => list.includes(m)),
+      modeLists[0] ?? [],
+    );
+    const capabilityIssues = [];
+    if (!supportedModes.length) {
+      capabilityIssues.push("Grouped thermostats have no common Heat/Cool mode");
+    }
+    let minTemp = Math.max(...capStates.map((s) => coerceFiniteNumber(s.attributes.min_temp, this.defaultMinTemp())));
+    let maxTemp = Math.min(...capStates.map((s) => coerceFiniteNumber(s.attributes.max_temp, this.defaultMaxTemp())));
+    if (maxTemp < minTemp) {
+      capabilityIssues.push("Grouped thermostats have no overlapping temperature range");
+      // Keep the editor renderable, but the incompatible zone is disabled below
+      // and excluded from every automatic/direct apply path.
+      minTemp = coerceFiniteNumber(state.attributes.min_temp, this.defaultMinTemp());
+      maxTemp = coerceFiniteNumber(state.attributes.max_temp, this.defaultMaxTemp());
+    }
+    const capabilitiesCompatible = capabilityIssues.length === 0;
+    const tempStep = Math.max(...capStates.map((s) => coerceFiniteNumber(s.attributes.target_temp_step, 0.5) || 0.5));
     const entry = this.getOrCreateStoreEntry(config.entity);
     const scheduleMode = this.normalizeScheduleMode(
       entry.scheduleMode ?? stored?.scheduleMode ?? config.schedule_mode,
       supportedModes,
     );
-    const activeScheduleMode = this.normalizeActiveScheduleMode(
-      entry.activeScheduleMode !== undefined
-        ? entry.activeScheduleMode
-        : Object.prototype.hasOwnProperty.call(stored ?? {}, "activeScheduleMode")
-          ? stored.activeScheduleMode
-          : state.state,
-      supportedModes,
-    );
+    const activeScheduleMode = capabilitiesCompatible
+      ? this.normalizeActiveScheduleMode(
+          entry.activeScheduleMode !== undefined
+            ? entry.activeScheduleMode
+            : Object.prototype.hasOwnProperty.call(stored ?? {}, "activeScheduleMode")
+              ? stored.activeScheduleMode
+              : state.state,
+          supportedModes,
+        )
+      : null;
     const modes = this.getOrCreateSchedules(config.entity, state, stored?.modes);
     this.ensureSchedulesForModes(modes, supportedModes, state);
 
@@ -599,7 +646,6 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     entry.scheduleMode = scheduleMode;
     entry.activeScheduleMode = activeScheduleMode;
 
-    const entityIds = group?.entityIds ?? [config.entity];
     const unavailableEntities = entityIds.filter((entityId) => {
       const entityState = this._hass.states[entityId]?.state;
       return !entityState || entityState === "unavailable" || entityState === "unknown";
@@ -610,14 +656,16 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
       entityId: config.entity,
       entityIds,
       unavailableEntities,
+      capabilityIssues,
+      capabilitiesCompatible,
       name: group?.name ?? config.name ?? state.attributes.friendly_name ?? config.entity,
       currentTemp: formatTemperature(state.attributes.current_temperature ?? state.attributes.temperature),
       targetTemp: formatTemperature(state.attributes.temperature),
       // Limits and resolution come from the device itself (already in the
       // HA-configured unit system, so °F installs get °F numbers).
-      minTemp: coerceFiniteNumber(state.attributes.min_temp, this.defaultMinTemp()),
-      maxTemp: coerceFiniteNumber(state.attributes.max_temp, this.defaultMaxTemp()),
-      tempStep: coerceFiniteNumber(state.attributes.target_temp_step, 0.5) || 0.5,
+      minTemp,
+      maxTemp,
+      tempStep,
       supportedScheduleModes: supportedModes,
       hvacMode: state.state ?? "off",
       modes,
@@ -1283,6 +1331,7 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
 
   buildApplyPlans(at = new Date()) {
     return this.zones
+      .filter((zone) => zone.capabilitiesCompatible !== false)
       .map((zone) => buildZoneApplyPlan(zone, this.getActiveModeSchedule(zone)?.savedWeek, at))
       .filter(Boolean);
   }
@@ -1328,6 +1377,9 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     if (this.backendSyncComplete || this.applying || this.schedulerRunning || !this._hass?.callService) return;
 
     const plans = this.buildApplyPlans()
+      // Hands-off: the automatic tick must never turn a disabled zone off — that
+      // would override manual control. "off" plans stay only for explicit Apply.
+      .filter((plan) => plan.action !== "off")
       .map((plan) => this.withNeedsApply(plan))
       .filter((plan) => plan.needsApply);
 
@@ -1439,19 +1491,22 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
 
   renderZoneSwitch(zone) {
     const active = zone.activeScheduleMode === zone.scheduleMode;
+    const compatible = zone.capabilitiesCompatible !== false;
     const button = document.createElement("button");
     button.type = "button";
     button.className = "zone-toggle";
     button.classList.toggle("active", active);
-    button.disabled = this.applying;
+    button.disabled = this.applying || !compatible;
     button.setAttribute("aria-pressed", String(active));
     button.setAttribute("aria-label", `${zone.name} ${modeLabel(zone.scheduleMode)} schedule ${active ? "on" : "off"}`);
-    button.title = active
-      ? `${modeLabel(zone.scheduleMode)} schedule active`
-      : `Enable ${modeLabel(zone.scheduleMode)} schedule`;
+    button.title = !compatible
+      ? (zone.capabilityIssues ?? ["Incompatible grouped thermostats"]).join(" · ")
+      : active
+        ? `${modeLabel(zone.scheduleMode)} schedule active`
+        : `Enable ${modeLabel(zone.scheduleMode)} schedule`;
     button.addEventListener("click", async (event) => {
       event.stopPropagation();
-      if (this.applying) return;
+      if (this.applying || !compatible) return;
       const enabling = !active;
       this.setZoneActiveScheduleMode(zone, enabling ? zone.scheduleMode : null);
       if (enabling) {
@@ -1592,14 +1647,16 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     this.renderIfReady();
 
     try {
-      // Make sure the latest schedule reached the store before the tick reads it.
-      await this.saveZoneToBackend(zone).catch(() => undefined);
+      // The save must succeed before applying — otherwise the backend would
+      // apply the PREVIOUS schedule. Let a failure bubble to the outer catch
+      // (reported as failed) instead of swallowing it and applying stale data.
+      await this.saveZoneToBackend(zone);
       const result = await this._hass.callWS({ type: "nimbus_climate_scheduler/apply_now" });
       this.applyResultData = {
         applied: (result?.applied ?? []).map((entityId) => ({ entityId })),
         skippedOff: [],
         skippedMode: [],
-        failed: [],
+        failed: (result?.failed ?? []).map((entityId) => ({ entityId })),
       };
     } catch (error) {
       this.applyResultData = {
