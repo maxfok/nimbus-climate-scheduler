@@ -1,5 +1,17 @@
 # Nimbus Climate Scheduler — Change Log
 
+## 2026-06-24 · Race-free reference card loading (v0.2.11)
+
+- Registered the reference card as an awaited Lovelace module resource instead
+  of relying only on the frontend's parallel extra-module import.
+- Published an atomic `/local/` copy of the card so it is available before the
+  integration finishes loading during Home Assistant startup.
+- Added a truthful loading state with animated `.`, `..`, `...` progress and a
+  two-second retry while the scheduler WebSocket endpoint is unavailable.
+- Replaced the narrow-card open arrow with `mdi:tune-variant`.
+- Added backend resource/asset regression coverage and frontend loading/retry
+  tests.
+
 ## 2026-06-21 · Safety review + automated tests (v0.2.10)
 
 - Hardened websocket permissions and schedule payload validation.

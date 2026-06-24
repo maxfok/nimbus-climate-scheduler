@@ -27,6 +27,7 @@
   const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   const REFRESH_SCHEDULE_MS = 5 * 60 * 1000;
   const TICK_MS = 30 * 1000;
+  const INITIAL_RETRY_MS = 2 * 1000;
   const WS_GET_ZONES = "nimbus_climate_scheduler/get_zones";
   const PANEL_PATH = "/nimbus-climate-scheduler";
 
@@ -109,18 +110,21 @@
       noSchedule: "no schedule today", noScheduleLabel: "No schedule today",
       awaiting: "Awaiting next setpoint", since: "since {t}", at: "at",
       noMore: "no more changes today", openScheduler: "open scheduler",
+      loading: "Nimbus Climate Scheduler is loading",
       notFound: "Entity not found: {e}" },
     nl: { heating: "Verwarmen", cooling: "Koelen", off: "Uit", idle: "Inactief",
       holding: "blijft op {t}", scheduleOff: "schema uit", scheduleOffLabel: "Schema uit",
       noSchedule: "geen schema vandaag", noScheduleLabel: "Geen schema vandaag",
       awaiting: "Wachten op volgend instelpunt", since: "sinds {t}", at: "om",
       noMore: "geen wijzigingen meer vandaag", openScheduler: "planner openen",
+      loading: "Nimbus Climate Scheduler wordt geladen",
       notFound: "Entiteit niet gevonden: {e}" },
     de: { heating: "Heizen", cooling: "Kühlen", off: "Aus", idle: "Inaktiv",
       holding: "hält {t}", scheduleOff: "Zeitplan aus", scheduleOffLabel: "Zeitplan aus",
       noSchedule: "kein Zeitplan heute", noScheduleLabel: "Kein Zeitplan heute",
       awaiting: "Warte auf nächsten Sollwert", since: "seit {t}", at: "um",
       noMore: "keine weiteren Änderungen heute", openScheduler: "Planer öffnen",
+      loading: "Nimbus Climate Scheduler wird geladen",
       notFound: "Entität nicht gefunden: {e}" },
   };
   const getT = (hass) => TRANSLATIONS[(hass?.language || "en").split("-")[0]] || TRANSLATIONS.en;
@@ -151,6 +155,7 @@
     get hass() { return this._hass; }
 
     connectedCallback() {
+      this._maybeFetchZones();
       this._timer = setInterval(() => {
         this._maybeFetchZones(); // own REFRESH_SCHEDULE_MS guard — refetches at most every 5 min
         this._render();
@@ -158,6 +163,9 @@
     }
     disconnectedCallback() {
       if (this._timer) clearInterval(this._timer);
+      if (this._retryTimer) clearTimeout(this._retryTimer);
+      this._timer = null;
+      this._retryTimer = null;
     }
 
     getCardSize() { return 2; }
@@ -193,15 +201,26 @@
         const result = await this._hass.callWS({ type: WS_GET_ZONES });
         this._zones = result?.zones ?? {};
         this._zonesFetchedAt = Date.now();
+        if (this._retryTimer) clearTimeout(this._retryTimer);
+        this._retryTimer = null;
         this._render();
       } catch (err) {
-        // Panel not set up yet / websocket unavailable — keep previous data.
+        // The integration can finish loading after Lovelace. Keep the card in
+        // a truthful loading state and retry quickly instead of rendering a
+        // false "schedule off" state or leaving an HA error card behind.
+        if (!this._zones && !this._retryTimer) {
+          this._retryTimer = setTimeout(() => {
+            this._retryTimer = null;
+            this._maybeFetchZones();
+          }, INITIAL_RETRY_MS);
+        }
       } finally {
         this._fetching = false;
       }
     }
 
     _model(ent) {
+      if (!this._zones) return { loading: true };
       const hass = this._hass;
       const st = hass?.states?.[ent.entity];
       if (!st) return { error: true, notFound: ent.entity };
@@ -319,9 +338,23 @@
           .flat{ height:36px; border-radius:9px; display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--nb-ink-3); }
           .hatch{ background: repeating-linear-gradient(45deg, var(--nb-line-2), var(--nb-line-2) 6px, transparent 6px, transparent 12px); border:1px dashed var(--nb-line-2); }
           .neutral{ background: var(--nb-surface-2); }
+          .loading-state{ min-height:78px; display:flex; align-items:center; justify-content:center;
+            color:var(--nb-ink-3); font-size:12px; font-weight:500; letter-spacing:.01em; }
+          .loading-dots{ display:inline-flex; width:1.4em; margin-left:1px; text-align:left; }
+          .loading-dot{ opacity:0; }
+          .loading-dot:nth-child(1){ animation:ncs-dot-1 1.4s infinite; }
+          .loading-dot:nth-child(2){ animation:ncs-dot-2 1.4s infinite; }
+          .loading-dot:nth-child(3){ animation:ncs-dot-3 1.4s infinite; }
+          @keyframes ncs-dot-1{ 0%,14%,90%,100%{opacity:0} 20%,85%{opacity:1} }
+          @keyframes ncs-dot-2{ 0%,34%,90%,100%{opacity:0} 40%,85%{opacity:1} }
+          @keyframes ncs-dot-3{ 0%,54%,90%,100%{opacity:0} 60%,85%{opacity:1} }
           .open{ position:absolute; right:0; top:0; font-size:10px; color:var(--nb-ink-4); cursor:pointer; letter-spacing:.05em; text-transform:uppercase; transition:color .2s; }
           .open:hover{ color:var(--nb-ink-2); }
-          .open-icon{ display:none; font-size:13px; line-height:1; letter-spacing:0; top:-2px; }
+          .open-icon{ display:none; line-height:1; letter-spacing:0; top:-4px; }
+          .open-icon ha-icon{ width:16px; height:16px; --mdc-icon-size:16px; }
+          @media (prefers-reduced-motion: reduce){
+            .loading-dot{ animation:none !important; opacity:1; }
+          }
           @container (max-width: 430px){
             .open-text{ display:none; }
             .open-icon{ display:block; }
@@ -340,7 +373,9 @@
       const t = getT(this._hass);
 
       let body;
-      if (m.error) {
+      if (m.loading) {
+        body = `<div class="wrap"><div class="loading-state">${t.loading}<span class="loading-dots" aria-hidden="true"><span class="loading-dot">.</span><span class="loading-dot">.</span><span class="loading-dot">.</span></span></div></div>`;
+      } else if (m.error) {
         body = `<div class="wrap"><div class="flat neutral">${t.notFound.replace("{e}", esc(m.notFound))}</div></div>`;
       } else {
         const metaKey = m.state === "off" ? "off" : (m.mode || "off");
@@ -375,7 +410,7 @@
             <div class="temp">${fmtTemp(m.room)}</div>
           </div>`;
 
-        const openLink = `<span class="open open-text">${t.openScheduler}</span><span class="open open-icon" aria-label="${t.openScheduler}" role="button">↗</span>`;
+        const openLink = `<span class="open open-text">${t.openScheduler}</span><span class="open open-icon" aria-label="${t.openScheduler}" role="button"><ha-icon icon="mdi:tune-variant"></ha-icon></span>`;
         let track;
         if (m.state === "off") {
           track = `<div class="flat hatch"></div><div class="axis"><span class="l">${t.scheduleOffLabel}</span>${openLink}</div>`;

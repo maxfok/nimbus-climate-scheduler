@@ -8,11 +8,12 @@
   "dependencies": [
     "frontend",
     "http",
+    "lovelace",
     "panel_custom",
     "websocket_api"
   ],
   "documentation": "https://github.com/maxfok/nimbus-climate-scheduler",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/maxfok/nimbus-climate-scheduler/issues",
-  "version": "0.2.10"
+  "version": "0.2.11"
 }

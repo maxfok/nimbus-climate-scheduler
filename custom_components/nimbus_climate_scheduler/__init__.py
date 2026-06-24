@@ -1,17 +1,27 @@
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
 
 import voluptuous as vol
 
 from homeassistant.components import frontend, panel_custom
 from homeassistant.components.http import StaticPathConfig
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.components.lovelace.const import (
+    CONF_RESOURCE_TYPE_WS,
+    LOVELACE_DATA,
+    MODE_STORAGE,
+)
+from homeassistant.const import CONF_ID, CONF_TYPE, CONF_URL, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
+    CARD_FALLBACK_MODULE_URL,
+    CARD_JS_FILENAME,
     CARD_MODULE_URL,
+    CARD_PUBLIC_PATH,
     CONF_CLIMATES,
     CONF_ENTITY,
     CONF_NAME,
@@ -28,6 +38,8 @@ from .const import (
 from .scheduler import ClimateConfig, NimbusClimateScheduler
 from .store import NimbusClimateSchedulerStore
 from .websocket import async_setup_websocket_api
+
+_LOGGER = logging.getLogger(__name__)
 
 CLIMATE_SCHEMA = vol.Schema({
     vol.Required(CONF_ENTITY): cv.entity_id,
@@ -100,12 +112,26 @@ async def _async_setup_scheduler(
     scheduler.start()
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda event: scheduler.stop())
 
+    frontend_dir = Path(__file__).parent / "frontend"
+    card_module_url = CARD_MODULE_URL
+    try:
+        await hass.async_add_executor_job(
+            _sync_card_asset,
+            frontend_dir / CARD_JS_FILENAME,
+            Path(hass.config.path("www")) / CARD_JS_FILENAME,
+        )
+    except OSError:
+        # Keep the integration usable on an unexpectedly read-only config
+        # directory. This fallback can still race during startup, but the panel
+        # and scheduler should never fail because an optional card copy did.
+        _LOGGER.exception("Unable to publish the scheduler card under /local")
+        card_module_url = CARD_FALLBACK_MODULE_URL
+
     # Register the static frontend path only once per HA run. It cannot be
     # unregistered, so a config-entry reload must not try to re-add it
     # (that raises RuntimeError and breaks the reload).
     static_flag = f"{DOMAIN}_static_registered"
     if not hass.data.get(static_flag):
-        frontend_dir = Path(__file__).parent / "frontend"
         await hass.http.async_register_static_paths(
             [
                 StaticPathConfig(
@@ -117,12 +143,24 @@ async def _async_setup_scheduler(
         )
         hass.data[static_flag] = True
 
-    # Auto-load the dashboard card module so users don't have to add it as a
-    # Lovelace resource by hand. Additive and idempotent — guarded once per run.
-    card_flag = f"{DOMAIN}_card_registered"
-    if not hass.data.get(card_flag):
-        frontend.add_extra_js_url(hass, CARD_MODULE_URL)
-        hass.data[card_flag] = True
+    # Register as a real Lovelace resource so the dashboard waits for the card
+    # module before constructing custom cards. The extra frontend module below
+    # remains as a fallback for YAML resource mode and older installations.
+    try:
+        await _async_register_card_resource(hass, card_module_url)
+    except Exception:  # noqa: BLE001 - a card resource must not break scheduler setup
+        _LOGGER.exception("Unable to register the scheduler dashboard card resource")
+
+    # Also expose the module globally for the card picker and for YAML-mode
+    # installations. Importing the exact same URL twice is deduplicated by the
+    # browser, while the Lovelace resource provides the required await point.
+    card_url_key = f"{DOMAIN}_card_url"
+    previous_card_url = hass.data.get(card_url_key)
+    if previous_card_url != card_module_url:
+        if isinstance(previous_card_url, str):
+            frontend.remove_extra_js_url(hass, previous_card_url)
+        frontend.add_extra_js_url(hass, card_module_url)
+        hass.data[card_url_key] = card_module_url
 
     if _panel_custom_is_already_registered(full_config):
         return
@@ -147,6 +185,56 @@ async def _async_setup_scheduler(
             ],
         },
     )
+
+
+def _sync_card_asset(source: Path, target: Path) -> bool:
+    """Publish the card atomically under /local before Lovelace requests it."""
+    source_bytes = source.read_bytes()
+    if target.exists() and target.read_bytes() == source_bytes:
+        return False
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.tmp")
+    temporary.write_bytes(source_bytes)
+    os.replace(temporary, target)
+    return True
+
+
+async def _async_register_card_resource(
+    hass: HomeAssistant,
+    module_url: str = CARD_MODULE_URL,
+) -> bool:
+    """Ensure the scheduler card is an awaited Lovelace module resource."""
+    lovelace_data = hass.data.get(LOVELACE_DATA)
+    if lovelace_data is None or lovelace_data.resource_mode != MODE_STORAGE:
+        return False
+
+    resource_collection = lovelace_data.resources
+    # ResourceStorageCollection loads lazily. async_get_info() is its public
+    # load boundary and makes async_items() authoritative before we dedupe.
+    await resource_collection.async_get_info()
+    for item in resource_collection.async_items() or []:
+        item_url = str(item.get(CONF_URL, "")).split("?", 1)[0].rstrip("/")
+        if item_url not in {CARD_PUBLIC_PATH, CARD_FALLBACK_MODULE_URL}:
+            continue
+        if (
+            item.get(CONF_TYPE) != "module"
+            or item.get(CONF_URL) != module_url
+        ) and item.get(CONF_ID):
+            await resource_collection.async_update_item(
+                item[CONF_ID],
+                {
+                    CONF_RESOURCE_TYPE_WS: "module",
+                    CONF_URL: module_url,
+                },
+            )
+        return True
+
+    await resource_collection.async_create_item({
+        CONF_RESOURCE_TYPE_WS: "module",
+        CONF_URL: module_url,
+    })
+    return True
 
 
 def _configured_climates(domain_config: dict, full_config: dict) -> list[ClimateConfig]:

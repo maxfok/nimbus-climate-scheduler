@@ -95,4 +95,42 @@ describe("Nimbus Climate Scheduler card", () => {
 
     card.remove();
   });
+
+  it("shows a sequential-dot loading state and retries the integration", async () => {
+    vi.useFakeTimers();
+    const callWS = vi.fn()
+      .mockRejectedValueOnce(new Error("command not registered yet"))
+      .mockResolvedValue({ zones: { [ENTITY_ID]: makeZone() } });
+    const card = document.createElement("nimbus-climate-scheduler-card");
+    card.setConfig({ entity: ENTITY_ID });
+    card.hass = makeHass(callWS);
+    document.body.append(card);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(card.shadowRoot.textContent).toContain(
+      "Nimbus Climate Scheduler is loading",
+    );
+    expect(card.shadowRoot.querySelectorAll(".loading-dot")).toHaveLength(3);
+    expect(card.shadowRoot.textContent).not.toContain("Schedule off");
+    expect(callWS).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2 * 1000);
+    expect(callWS).toHaveBeenCalledTimes(2);
+    expect(card.shadowRoot.querySelector(".loading-state")).toBeNull();
+
+    card.remove();
+  });
+
+  it("uses the scheduler tune icon in the narrow open control", () => {
+    const card = document.createElement("nimbus-climate-scheduler-card");
+    card.setConfig({ entity: ENTITY_ID });
+    card._zones = { [ENTITY_ID]: makeZone() };
+    card._zonesFetchedAt = Date.now();
+    card.hass = makeHass(undefined);
+
+    expect(
+      card.shadowRoot.querySelector(".open-icon ha-icon").getAttribute("icon"),
+    ).toBe("mdi:tune-variant");
+  });
 });
