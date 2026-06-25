@@ -53,6 +53,13 @@ afterEach(() => {
 });
 
 describe("Nimbus Climate Scheduler card", () => {
+  it("installs a prepaint surface before the card renders", () => {
+    const style = document.getElementById("nimbus-climate-scheduler-card-prepaint");
+
+    expect(style?.textContent).toContain("nimbus-climate-scheduler-card");
+    expect(style?.textContent).toContain("linear-gradient");
+  });
+
   it("escapes user-controlled zone names", () => {
     const card = document.createElement("nimbus-climate-scheduler-card");
     card.setConfig({ entity: ENTITY_ID, name: '<img id="xss" src=x>' });
@@ -122,7 +129,7 @@ describe("Nimbus Climate Scheduler card", () => {
     card.remove();
   });
 
-  it("uses the scheduler tune icon in the narrow open control", () => {
+  it("uses the scheduler tune icon in the narrow axis open control", () => {
     const card = document.createElement("nimbus-climate-scheduler-card");
     card.setConfig({ entity: ENTITY_ID });
     card._zones = { [ENTITY_ID]: makeZone() };
@@ -130,7 +137,63 @@ describe("Nimbus Climate Scheduler card", () => {
     card.hass = makeHass(undefined);
 
     expect(
-      card.shadowRoot.querySelector(".open-icon ha-icon").getAttribute("icon"),
+      card.shadowRoot.querySelector(".axis .open-icon ha-icon").getAttribute("icon"),
     ).toBe("mdi:tune-variant");
+  });
+
+  it("sends haptic feedback when the narrow axis open control is tapped", () => {
+    const card = document.createElement("nimbus-climate-scheduler-card");
+    card.setConfig({ entity: ENTITY_ID });
+    card._zones = { [ENTITY_ID]: makeZone() };
+    card._zonesFetchedAt = Date.now();
+    card.hass = makeHass(undefined);
+    document.body.append(card);
+
+    const onHaptic = vi.fn();
+    card.addEventListener("haptic", onHaptic);
+    card.shadowRoot.querySelector(".open-icon").click();
+
+    expect(onHaptic).toHaveBeenCalledTimes(1);
+    expect(onHaptic.mock.calls[0][0].detail).toBe("selection");
+
+    card.remove();
+  });
+
+  it("does not rebuild the card for unrelated hass updates", () => {
+    const card = document.createElement("nimbus-climate-scheduler-card");
+    card.setConfig({ entity: ENTITY_ID });
+    card._zones = { [ENTITY_ID]: makeZone() };
+    card._zonesFetchedAt = Date.now();
+    card.hass = makeHass(undefined);
+    const renderedCard = card.shadowRoot.querySelector("ha-card");
+
+    const nextHass = makeHass(undefined);
+    nextHass.states["sensor.unrelated"] = {
+      state: "changed",
+      attributes: { friendly_name: "Unrelated" },
+    };
+    card.hass = nextHass;
+
+    expect(card.shadowRoot.querySelector("ha-card")).toBe(renderedCard);
+  });
+
+  it("can restore scroll position after a zone tab switch render", () => {
+    const card = document.createElement("nimbus-climate-scheduler-card");
+    card.setConfig({ entity: ENTITY_ID });
+    const scroller = document.createElement("div");
+    document.body.append(scroller);
+    scroller.append(card);
+    scroller.scrollTop = 42;
+    scroller.scrollLeft = 7;
+
+    const snapshot = card._snapshotScroll({
+      composedPath: () => [card, scroller, document.body, document.documentElement],
+    });
+    scroller.scrollTop = 0;
+    scroller.scrollLeft = 0;
+    card._restoreScroll(snapshot);
+
+    expect(scroller.scrollTop).toBe(42);
+    expect(scroller.scrollLeft).toBe(7);
   });
 });

@@ -1,5 +1,19 @@
 # Nimbus Climate Scheduler — Change Log
 
+## 2026-06-25 · Mobile reference-card polish (v0.2.12)
+
+- Added haptic feedback when opening the scheduler from the narrow reference
+  card control.
+- Aligned the narrow `mdi:tune-variant` control with the axis label baseline.
+- Reduced mobile dashboard jumping by skipping unrelated Home Assistant
+  re-renders and refreshing the marker only when the minute changes.
+- Added a prepaint surface so the card no longer flashes transparent before
+  its themed shell is rendered.
+- Preserved scroll position during reference-card tab switches and disabled
+  scroll anchoring inside the card.
+- Added frontend regression coverage for haptics, prepaint, render skipping
+  and scroll restoration.
+
 ## 2026-06-24 · Race-free reference card loading (v0.2.11)
 
 - Registered the reference card as an awaited Lovelace module resource instead

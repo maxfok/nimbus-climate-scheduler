@@ -30,6 +30,7 @@
   const INITIAL_RETRY_MS = 2 * 1000;
   const WS_GET_ZONES = "nimbus_climate_scheduler/get_zones";
   const PANEL_PATH = "/nimbus-climate-scheduler";
+  const PREPAINT_STYLE_ID = "nimbus-climate-scheduler-card-prepaint";
 
   const scheduleMinuteToClockMinute = (m) => (DAY_START_MINUTES + m) % DAY_LENGTH_MINUTES;
   const clockMinuteToScheduleMinute = (m) => (m - DAY_START_MINUTES + DAY_LENGTH_MINUTES) % DAY_LENGTH_MINUTES;
@@ -50,6 +51,21 @@
     history.pushState(null, "", path);
     window.dispatchEvent(new CustomEvent("location-changed", { bubbles: true, composed: true }));
   };
+  const installPrepaintStyle = () => {
+    if (typeof document === "undefined" || document.getElementById(PREPAINT_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = PREPAINT_STYLE_ID;
+    style.textContent = `
+      nimbus-climate-scheduler-card {
+        display: block;
+        min-height: 147px;
+        border-radius: 20px;
+        background: linear-gradient(180deg, #1b1d22 0%, #181a1e 100%);
+      }
+    `;
+    (document.head || document.documentElement)?.appendChild(style);
+  };
+  installPrepaintStyle();
 
   // Walk forward to the idx-th setpoint from a day, crossing into the next
   // schedule day(s), so the "next" after the last setpoint of the day reflects
@@ -150,7 +166,10 @@
     set hass(hass) {
       this._hass = hass;
       this._maybeFetchZones();
-      this._render();
+      const sig = this._hassSignature();
+      if (sig !== this._lastHassSignature) {
+        this._render();
+      }
     }
     get hass() { return this._hass; }
 
@@ -158,7 +177,11 @@
       this._maybeFetchZones();
       this._timer = setInterval(() => {
         this._maybeFetchZones(); // own REFRESH_SCHEDULE_MS guard — refetches at most every 5 min
-        this._render();
+        // The marker/time only changes at minute precision. Rebuilding the
+        // whole shadow DOM every 30s — and on every unrelated HA state update
+        // — can make mobile dashboards visibly reflow/jump.
+        const minute = Math.floor(Date.now() / 60000);
+        if (minute !== this._lastRenderMinute) this._render();
       }, TICK_MS);
     }
     disconnectedCallback() {
@@ -191,6 +214,78 @@
       if (c >= 22) return "#f3d24e";
       if (c >= 20.5) return "#9afb3b";
       return "#6df338";
+    }
+    _haptic(style = "selection") {
+      try {
+        this.dispatchEvent(new CustomEvent("haptic", {
+          detail: style,
+          bubbles: true,
+          composed: true,
+        }));
+      } catch (err) {}
+
+      try {
+        if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+          navigator.vibrate(style === "selection" || style === "light" ? 10 : 18);
+        }
+      } catch (err) {}
+    }
+    _openScheduler() {
+      this._haptic("selection");
+      navigateTo(PANEL_PATH);
+    }
+    _snapshotScroll(ev) {
+      const seen = new Set();
+      const items = [];
+      const add = (el) => {
+        if (!el || seen.has(el)) return;
+        seen.add(el);
+        const top = el.scrollTop || 0;
+        const left = el.scrollLeft || 0;
+        if (top || left || el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth) {
+          items.push({ el, top, left });
+        }
+      };
+      add(document.scrollingElement || document.documentElement);
+      for (const node of ev?.composedPath?.() || []) {
+        if (node?.nodeType !== 1) continue;
+        let el = node;
+        while (el) {
+          add(el);
+          const root = el.getRootNode?.();
+          el = el.parentElement || (root instanceof ShadowRoot ? root.host : null);
+        }
+      }
+      return items;
+    }
+    _restoreScroll(items) {
+      const restore = () => {
+        for (const item of items || []) {
+          item.el.scrollTop = item.top;
+          item.el.scrollLeft = item.left;
+        }
+      };
+      restore();
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(restore);
+    }
+    _hassSignature() {
+      const hass = this._hass;
+      if (!hass) return "no-hass";
+      const lang = (hass.language || "en").split("-")[0];
+      const unit = hass.config?.unit_system?.temperature ?? "°C";
+      const zonesReady = this._zones ? "zones" : "loading";
+      const entities = (this._entities || []).map((ent) => {
+        const st = hass.states?.[ent.entity];
+        const a = st?.attributes || {};
+        return [
+          ent.entity,
+          ent.name || "",
+          st?.state || "",
+          a.friendly_name || "",
+          a.current_temperature ?? "",
+        ].join(":");
+      }).join("|");
+      return [lang, unit, zonesReady, this._activeIndex ?? 0, entities].join(";");
     }
 
     async _maybeFetchZones() {
@@ -284,19 +379,20 @@
         <style>
           *{ box-sizing:border-box; }
           :host{
+            display:block; min-height:0 !important; background:transparent !important; border-radius:0 !important; overflow-anchor:none;
             --nb-surface:#1b1d22; --nb-surface-2:#232529; --nb-surface-3:#2a2c32;
             --nb-line:rgba(255,255,255,.06); --nb-line-2:rgba(255,255,255,.10);
             --nb-ink:#ecebe7; --nb-ink-2:#c2c0bb; --nb-ink-3:#8a8884; --nb-ink-4:#5e5d59;
           }
           .ncs-tabs{ display:flex; gap:4px; padding:3px; margin:0 0 10px; background:rgba(255,255,255,.025);
-            border:1px solid var(--nb-line); border-radius:14px; width:fit-content; max-width:100%; overflow-x:auto; }
+            border:1px solid var(--nb-line); border-radius:14px; width:fit-content; max-width:100%; overflow-x:auto; overflow-anchor:none; }
           .ncs-tab{ appearance:none; border:0; cursor:pointer; display:inline-flex; align-items:center; padding:6px 11px;
             border-radius:10px; background:transparent; color:var(--nb-ink-3); font:600 12px/1 inherit; white-space:nowrap;
             transition:color .2s, background .2s; }
           .ncs-tab:hover{ color:var(--nb-ink-2); }
           .ncs-tab.is-active{ background:var(--nb-surface-2); color:var(--nb-ink);
             box-shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 1px 2px rgba(0,0,0,.25); }
-          ha-card{ display:block;
+          ha-card{ display:block; overflow-anchor:none;
             background: linear-gradient(180deg, var(--nb-surface) 0%, #181a1e 100%);
             color: var(--nb-ink);
             border: 1px solid var(--nb-line-2);
@@ -310,7 +406,7 @@
             color:var(--accent); border:1px solid color-mix(in oklch, var(--accent) 35%, transparent);
             background: radial-gradient(120% 120% at 30% 20%, color-mix(in oklch, var(--accent) 22%, transparent), transparent 70%), var(--nb-surface-3); }
           .avatar svg{ width:20px; height:20px; }
-          .name-row{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0; }
+          .name-row{ display:flex; align-items:center; gap:8px; flex-wrap:nowrap; min-width:0; }
           .name{ font-size:16px; font-weight:600; letter-spacing:-.01em; color:var(--nb-ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
           .pill{ flex:none; display:inline-flex; align-items:center; gap:6px; padding:5px 10px 5px 8px; border-radius:99px;
             background: color-mix(in oklch, var(--accent) 14%, transparent); color:var(--accent);
@@ -338,7 +434,7 @@
           .flat{ height:36px; border-radius:9px; display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--nb-ink-3); }
           .hatch{ background: repeating-linear-gradient(45deg, var(--nb-line-2), var(--nb-line-2) 6px, transparent 6px, transparent 12px); border:1px dashed var(--nb-line-2); }
           .neutral{ background: var(--nb-surface-2); }
-          .loading-state{ min-height:78px; display:flex; align-items:center; justify-content:center;
+          .loading-state{ min-height:111px; display:flex; align-items:center; justify-content:center;
             color:var(--nb-ink-3); font-size:12px; font-weight:500; letter-spacing:.01em; }
           .loading-dots{ display:inline-flex; width:1.4em; margin-left:1px; text-align:left; }
           .loading-dot{ opacity:0; }
@@ -348,23 +444,25 @@
           @keyframes ncs-dot-1{ 0%,14%,90%,100%{opacity:0} 20%,85%{opacity:1} }
           @keyframes ncs-dot-2{ 0%,34%,90%,100%{opacity:0} 40%,85%{opacity:1} }
           @keyframes ncs-dot-3{ 0%,54%,90%,100%{opacity:0} 60%,85%{opacity:1} }
-          .open{ position:absolute; right:0; top:0; font-size:10px; color:var(--nb-ink-4); cursor:pointer; letter-spacing:.05em; text-transform:uppercase; transition:color .2s; }
+          .open{ position:absolute; right:0; top:0; font-size:10px; color:var(--nb-ink-4); cursor:pointer; letter-spacing:.05em; text-transform:uppercase; transition:color .2s, background .2s; }
           .open:hover{ color:var(--nb-ink-2); }
-          .open-icon{ display:none; line-height:1; letter-spacing:0; top:-4px; }
+          .open-icon{ appearance:none; border:0; padding:0; margin:0; background:transparent; display:none; align-items:center; justify-content:center;
+            width:18px; height:18px; border-radius:99px; line-height:1; letter-spacing:0; text-transform:none; }
+          .open-icon:hover{ background:rgba(255,255,255,.04); }
           .open-icon ha-icon{ width:16px; height:16px; --mdc-icon-size:16px; }
           @media (prefers-reduced-motion: reduce){
             .loading-dot{ animation:none !important; opacity:1; }
           }
           @container (max-width: 430px){
             .open-text{ display:none; }
-            .open-icon{ display:block; }
+            .open-icon{ display:inline-flex; }
           }
         </style>`;
 
       // Paint the themed shell immediately, before hass arrives, so the card
       // never flashes the default (transparent) ha-card on first load/refresh.
       if (!this._hass) {
-        this.shadowRoot.innerHTML = STYLE + `<ha-card><div class="wrap" style="min-height:78px"></div></ha-card>`;
+        this.shadowRoot.innerHTML = STYLE + `<ha-card><div class="wrap" style="min-height:111px"></div></ha-card>`;
         return;
       }
 
@@ -410,7 +508,7 @@
             <div class="temp">${fmtTemp(m.room)}</div>
           </div>`;
 
-        const openLink = `<span class="open open-text">${t.openScheduler}</span><span class="open open-icon" aria-label="${t.openScheduler}" role="button"><ha-icon icon="mdi:tune-variant"></ha-icon></span>`;
+        const openLink = `<span class="open open-text open-control" role="button" tabindex="0">${t.openScheduler}</span><button type="button" class="open open-icon open-control" aria-label="${esc(t.openScheduler)}"><ha-icon icon="mdi:tune-variant"></ha-icon></button>`;
         let track;
         if (m.state === "off") {
           track = `<div class="flat hatch"></div><div class="axis"><span class="l">${t.scheduleOffLabel}</span>${openLink}</div>`;
@@ -453,15 +551,36 @@
         : "";
 
       this.shadowRoot.innerHTML = STYLE + tabs + `<ha-card>${body}</ha-card>`;
+      this._lastHassSignature = this._hassSignature();
+      this._lastRenderMinute = Math.floor(Date.now() / 60000);
 
       this.shadowRoot.querySelectorAll(".ncs-tab").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          this._activeIndex = Number.parseInt(btn.dataset.idx, 10) || 0;
+        btn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          const nextIndex = Number.parseInt(btn.dataset.idx, 10) || 0;
+          if (nextIndex === this._activeIndex) {
+            btn.blur?.();
+            return;
+          }
+          const scroll = this._snapshotScroll(ev);
+          btn.blur?.();
+          this._activeIndex = nextIndex;
           this._render();
+          this._restoreScroll(scroll);
         });
       });
 
-      this.shadowRoot.querySelectorAll(".open").forEach((el) => el.addEventListener("click", () => navigateTo(PANEL_PATH)));
+      this.shadowRoot.querySelectorAll(".open-control").forEach((el) => {
+        const open = (ev) => {
+          ev.preventDefault();
+          this._openScheduler();
+        };
+        el.addEventListener("click", open);
+        el.addEventListener("keydown", (ev) => {
+          if (ev.key !== "Enter" && ev.key !== " ") return;
+          open(ev);
+        });
+      });
     }
   }
 
