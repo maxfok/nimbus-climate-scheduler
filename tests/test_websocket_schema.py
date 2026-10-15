@@ -27,9 +27,19 @@ def test_valid_zone_payload() -> None:
 
 @pytest.mark.parametrize(
     ("minute", "temp"),
-    [(-1, 20), (1440, 20), (0, "warm")],
+    [(-1, 20), (1440, 20), (0.5, 20), (True, 20), (0, "warm"), (0, float("nan")), (0, float("inf")), (0, True)],
 )
 def test_invalid_setpoint_is_rejected(minute, temp) -> None:
     """Invalid times and temperatures never reach persistent storage."""
     with pytest.raises(vol.Invalid):
         _ZONE_DATA_SCHEMA(make_payload(minute=minute, temp=temp))
+
+
+@pytest.mark.parametrize("points", [[], [{"minute": 15, "temp": 20}], [
+    {"minute": 0, "temp": 20}, {"minute": 0, "temp": 21},
+], [{"minute": 0, "temp": 20}, {"minute": 60, "temp": 21}, {"minute": 30, "temp": 19}]])
+def test_incomplete_or_ambiguous_day_is_rejected(points):
+    payload = make_payload()
+    payload["modes"]["heat"]["savedWeek"]["Mon"] = points
+    with pytest.raises(vol.Invalid):
+        _ZONE_DATA_SCHEMA(payload)

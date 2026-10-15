@@ -9,5 +9,22 @@
     "abort": {
       "single_instance_allowed": "Nimbus Climate Scheduler is already configured."
     }
+  },
+  "entity": {
+    "number": {
+      "heat_cold_color_threshold": { "name": "Heating cold color threshold" },
+      "heat_warm_color_threshold": { "name": "Heating warm color threshold" },
+      "heat_hot_color_threshold": { "name": "Heating hot color threshold" },
+      "cool_cold_color_threshold": { "name": "Cooling cold color threshold" },
+      "cool_warm_color_threshold": { "name": "Cooling warm color threshold" },
+      "cool_hot_color_threshold": { "name": "Cooling hot color threshold" }
+    },
+    "switch": { "schedule": { "name": "Schedule" } },
+    "select": {
+      "schedule_mode": {
+        "name": "Schedule mode",
+        "state": { "heat": "Heating", "cool": "Cooling" }
+      }
+    }
   }
 }

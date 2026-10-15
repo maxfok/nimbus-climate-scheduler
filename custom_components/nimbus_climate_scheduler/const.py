@@ -1,4 +1,5 @@
 DOMAIN = "nimbus_climate_scheduler"
+SIGNAL_UPDATED = f"{DOMAIN}_updated"
 
 CONF_CLIMATES = "climates"
 CONF_ENTITY = "entity"

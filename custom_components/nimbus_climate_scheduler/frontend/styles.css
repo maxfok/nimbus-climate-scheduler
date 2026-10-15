@@ -6,7 +6,7 @@
   --line: #3a3327;
   --text: #ece7dc;
   --muted: #a7a096;
-  --faint: #706b63;
+  --faint: #a09a91;
   --orange: #ff8243;
   --orange-soft: #c57541;
   --blue: #52dce9;
@@ -347,6 +347,12 @@ select {
 .zone-name {
   width: 220px;
   display: grid;
+  border: 0;
+  padding: 8px 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
   gap: 3px;
   font-size: 16px;
   font-weight: 800;
@@ -488,8 +494,9 @@ select {
 }
 
 .day-button {
-  width: 88px;
-  height: 32px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 8px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
   color: var(--muted);
@@ -748,6 +755,7 @@ select {
 }
 
 .setpoint-editor label,
+.setpoint-editor > span,
 .copy-actions label {
   color: var(--muted);
   font-size: 10px;
@@ -764,6 +772,13 @@ select {
   padding: 0 10px;
   color: var(--text);
   background: var(--surface-2);
+  font-size: 16px;
+  font-weight: 400;
+  letter-spacing: normal;
+}
+
+.setpoint-editor label > input {
+  margin-top: 6px;
 }
 
 .copy-actions button {
@@ -914,10 +929,6 @@ select {
 .zone.expanded {
   border-color: rgba(255, 130, 67, 0.55);
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
-}
-
-.zone.expanded .zone-body {
-  animation: zone-body-in 220ms ease both;
 }
 
 @keyframes zone-body-in {
@@ -1328,10 +1339,14 @@ select {
 }
 
 .day-chevron::before {
-  content: "❯";
+  content: "";
   display: block;
-  font-size: 14px;
-  font-weight: 900;
+  width: 8px;
+  height: 8px;
+  margin: auto;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  transform: rotate(-45deg);
   transition: rotate 160ms ease;
 }
 
@@ -1355,7 +1370,7 @@ select {
 /* === HC3-style zone manage buttons + copy row =========================== */
 
 .zone-actions {
-  grid-template-columns: 92px 78px 31px 31px;
+  grid-template-columns: minmax(125px, auto) 92px 78px 31px 31px;
 }
 
 .icon-button {
@@ -1385,6 +1400,10 @@ select {
   grid-template-columns: auto auto 31px 31px;
 }
 
+:host([narrow]) .zone-members-button {
+  grid-column: 1 / -1;
+}
+
 .copy-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1396,46 +1415,6 @@ select {
   display: flex;
   gap: 6px;
   margin-left: auto;
-}
-
-/* === HC3-style column headers + zone status ============================= */
-
-.zone-column-headers {
-  display: flex;
-  align-items: center;
-  gap: 28px;
-  padding: 0 18px;
-  color: var(--faint);
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.zone-column-headers .zch-icon {
-  width: 15px;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.zone-column-headers .zch-name {
-  width: 220px;
-}
-
-.zone-column-headers .zch-temp {
-  width: 120px;
-}
-
-.zone-column-headers .zch-mode {
-  flex: 1;
-}
-
-.zone-column-headers .zch-manage {
-  text-align: right;
-}
-
-:host([narrow]) .zone-column-headers {
-  display: none;
 }
 
 .zone-status {
@@ -1458,4 +1437,313 @@ select {
 .zone-status-value.warn {
   color: #ffb1a1;
   font-weight: 700;
+}
+
+.zone-status[hidden] {
+  display: none;
+}
+
+.zone-switch-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.zone-schedule-state {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.week-toolbar,
+.day-selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.week-toolbar {
+  justify-content: space-between;
+  padding: 8px 0;
+}
+
+.day-selection {
+  grid-column: 1 / -1;
+  margin: 0 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.day-selection legend {
+  padding: 0 6px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.day-selection p {
+  flex-basis: 100%;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.day-selection label,
+.week-toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+}
+
+.day-selection input,
+.week-toolbar input {
+  accent-color: var(--orange);
+}
+
+.day-selection button,
+.add-interval,
+.remove-interval {
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.add-interval {
+  border-color: var(--orange-soft);
+}
+
+button:disabled,
+input:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 3px;
+}
+
+.setpoint-editor {
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+}
+
+.setpoint-panel,
+:host([narrow]) .setpoint-panel {
+  grid-template-columns: repeat(auto-fit, minmax(min(185px, 100%), 1fr));
+}
+
+.copy-action-buttons {
+  flex-wrap: wrap;
+}
+
+.zone-entity {
+  overflow-wrap: anywhere;
+}
+
+.zone-members {
+  max-width: 780px;
+  padding: 4px 0 16px;
+}
+
+.zone-members h3 {
+  margin: 8px 0;
+}
+
+.zone-members p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.members-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 16px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.members-list legend {
+  padding: 0 6px;
+  font-size: 13px;
+}
+
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.member-row:has(input:checked) {
+  border-color: var(--orange-soft);
+}
+
+.member-row input {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--orange);
+}
+
+.member-details {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+
+.member-entity,
+.member-status {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.zone-members .members-error {
+  color: var(--orange);
+}
+
+.zone-members .setup-actions {
+  flex-wrap: wrap;
+}
+
+.panel-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-tabs button {
+  min-height: 42px;
+  padding: 8px 18px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.panel-tabs button[aria-selected="true"] {
+  color: var(--text);
+  border-bottom-color: var(--orange);
+}
+
+.settings {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.settings h2 {
+  margin-top: 0;
+}
+
+.settings p {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.settings-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 20px;
+}
+
+.settings-form fieldset {
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 16px;
+}
+
+.settings-form legend {
+  padding: 0 6px;
+  font-weight: 700;
+}
+
+.settings-form label {
+  font-size: 13px;
+}
+
+.settings-form input {
+  display: block;
+  width: 100%;
+  min-height: 38px;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.settings-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.settings-actions button,
+.apply-result button {
+  min-height: 38px;
+  padding: 6px 12px;
+  border: 1px solid var(--orange-soft);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.color-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  padding: 6px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.color-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 50%;
+}
+
+.color-cold { background: var(--blue); }
+.color-comfort { background: var(--green); }
+.color-warm { background: var(--lime); }
+.color-hot { background: var(--yellow); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }

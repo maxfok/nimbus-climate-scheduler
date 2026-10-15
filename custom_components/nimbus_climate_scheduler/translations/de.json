@@ -1,0 +1,30 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Nimbus Climate Scheduler",
+        "description": "Fügt die Zeitplanansicht zur Seitenleiste hinzu. Thermostate und Zonen richtest du anschließend dort ein."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Nimbus Climate Scheduler ist bereits eingerichtet."
+    }
+  },
+  "entity": {
+    "number": {
+      "heat_cold_color_threshold": { "name": "Heizen Farbschwelle kalt" },
+      "heat_warm_color_threshold": { "name": "Heizen Farbschwelle warm" },
+      "heat_hot_color_threshold": { "name": "Heizen Farbschwelle heiß" },
+      "cool_cold_color_threshold": { "name": "Kühlen Farbschwelle kalt" },
+      "cool_warm_color_threshold": { "name": "Kühlen Farbschwelle warm" },
+      "cool_hot_color_threshold": { "name": "Kühlen Farbschwelle heiß" }
+    },
+    "switch": { "schedule": { "name": "Zeitplan" } },
+    "select": {
+      "schedule_mode": {
+        "name": "Zeitplanmodus",
+        "state": { "heat": "Heizen", "cool": "Kühlen" }
+      }
+    }
+  }
+}

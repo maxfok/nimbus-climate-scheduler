@@ -25,6 +25,12 @@
   const DAY_START_MINUTES = 5 * 60;
   const DAY_LENGTH_MINUTES = 24 * 60;
   const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  // Keep the /local card self-contained so it can load before the integration's
+  // static path. These fallbacks match pre-settings installations of the panel.
+  const DEFAULT_COLOR_THRESHOLDS = {
+    heat: { cold: 18, warm: 20.5, hot: 22 },
+    cool: { cold: 24, warm: 25.5, hot: 27 },
+  };
   const REFRESH_SCHEDULE_MS = 5 * 60 * 1000;
   const TICK_MS = 30 * 1000;
   const INITIAL_RETRY_MS = 2 * 1000;
@@ -129,12 +135,12 @@
     for (let i = 0; i < setpoints.length; i += 1) {
       if ((setpoints[i].minute ?? 0) <= scheduleMinute) activeIndex = i;
     }
-    const len = setpoints.length;
+    const next = upcomingSetpoint(savedWeek, dayIndex, activeIndex + 1) ?? setpoints[0];
     return {
       current: setpoints[activeIndex],
-      next: upcomingSetpoint(savedWeek, dayIndex, activeIndex + 1) ?? setpoints[0],
+      next,
       scheduleMinute,
-      single: len === 1,
+      single: setpoints.length === 1 && next.temp === setpoints[0].temp,
     };
   }
 
@@ -207,6 +213,7 @@
 
     set hass(hass) {
       this._hass = hass;
+      this._subscribe();
       this._maybeFetchZones();
       const sig = this._hassSignature();
       if (sig !== this._lastHassSignature) {
@@ -216,6 +223,7 @@
     get hass() { return this._hass; }
 
     connectedCallback() {
+      this._subscribe();
       this._maybeFetchZones();
       this._timer = setInterval(() => {
         this._maybeFetchZones(); // own REFRESH_SCHEDULE_MS guard — refetches at most every 5 min
@@ -231,6 +239,8 @@
       if (this._retryTimer) clearTimeout(this._retryTimer);
       this._timer = null;
       this._retryTimer = null;
+      this._unsubscribe?.();
+      this._unsubscribe = null;
     }
 
     getCardSize() { return 2; }
@@ -246,15 +256,10 @@
     // Same discrete bands as the scheduler panel — keeps card and panel in sync.
     _colorForTemp(temp, mode) {
       const c = this._toCelsius(temp);
-      if (mode === "cool") {
-        if (c <= 24) return "#52dce9";
-        if (c >= 27) return "#f3d24e";
-        if (c >= 25.5) return "#9afb3b";
-        return "#6df338";
-      }
-      if (c <= 18) return "#52dce9";
-      if (c >= 22) return "#f3d24e";
-      if (c >= 20.5) return "#9afb3b";
+      const { cold, warm, hot } = (this._colorThresholds ?? DEFAULT_COLOR_THRESHOLDS)[mode ?? "heat"];
+      if (c <= cold + 1e-8) return "#52dce9";
+      if (c >= hot - 1e-8) return "#f3d24e";
+      if (c >= warm - 1e-8) return "#9afb3b";
       return "#6df338";
     }
     _haptic(style = "selection") {
@@ -330,13 +335,31 @@
       return [lang, unit, zonesReady, this._activeIndex ?? 0, entities].join(";");
     }
 
-    async _maybeFetchZones() {
-      if (!this._hass?.callWS || this._fetching) return;
-      if (this._zones && Date.now() - this._zonesFetchedAt < REFRESH_SCHEDULE_MS) return;
+    async _subscribe() {
+      if (!this.isConnected || !this._hass?.connection?.subscribeMessage || this._unsubscribe || this._subscribing) return;
+      this._subscribing = true;
+      try {
+        const unsubscribe = await this._hass.connection.subscribeMessage(
+          () => this._maybeFetchZones(true), { type: "nimbus_climate_scheduler/subscribe" },
+        );
+        if (this.isConnected) this._unsubscribe = unsubscribe;
+        else unsubscribe();
+      } catch { /* Older backends use the periodic refresh. */ }
+      finally { this._subscribing = false; }
+    }
+
+    async _maybeFetchZones(force = false) {
+      if (!this._hass?.callWS) return;
+      if (this._fetching) {
+        this._refetch ||= force;
+        return;
+      }
+      if (!force && this._zones && Date.now() - this._zonesFetchedAt < REFRESH_SCHEDULE_MS) return;
       this._fetching = true;
       try {
         const result = await this._hass.callWS({ type: WS_GET_ZONES });
         this._zones = result?.zones ?? {};
+        this._colorThresholds = result?.settings?.color_thresholds ?? DEFAULT_COLOR_THRESHOLDS;
         this._zonesFetchedAt = Date.now();
         if (this._retryTimer) clearTimeout(this._retryTimer);
         this._retryTimer = null;
@@ -353,6 +376,10 @@
         }
       } finally {
         this._fetching = false;
+        if (this._refetch) {
+          this._refetch = false;
+          this._maybeFetchZones(true);
+        }
       }
     }
 

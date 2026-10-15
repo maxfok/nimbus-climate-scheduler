@@ -18,6 +18,13 @@ class NimbusClimateSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
     VERSION = 1
 
+    async def async_step_import(self, user_input: dict[str, Any]) -> ConfigFlowResult:
+        await self.async_set_unique_id(DOMAIN)
+        self._abort_if_unique_id_configured()
+        if self._async_current_entries():
+            return self.async_abort(reason="single_instance_allowed")
+        return self.async_create_entry(title="Nimbus Climate Scheduler", data=user_input)
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:

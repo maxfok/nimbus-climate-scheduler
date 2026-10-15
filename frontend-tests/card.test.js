@@ -87,6 +87,20 @@ describe("Nimbus Climate Scheduler card", () => {
     expect(card.shadowRoot.textContent).toContain("21° at 05:00");
   });
 
+  it("shows tomorrow's change even when today has just one interval", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 5, 23, 1, 0)); // Still Monday's schedule day.
+    const week = makeWeek();
+    week.Mon = [{ minute: 0, temp: 18 }];
+    week.Tue[0].temp = 21;
+    const card = document.createElement("nimbus-climate-scheduler-card");
+    card.setConfig({ entity: ENTITY_ID });
+    card._zones = { [ENTITY_ID]: makeZone(week) };
+    card.hass = makeHass(undefined);
+    expect(card.shadowRoot.textContent).toContain("21° at 05:00");
+    expect(card.shadowRoot.textContent).not.toContain("no more changes today");
+  });
+
   it("refreshes schedules every five minutes without a hass state update", async () => {
     vi.useFakeTimers();
     const callWS = vi.fn().mockResolvedValue({ zones: { [ENTITY_ID]: makeZone() } });

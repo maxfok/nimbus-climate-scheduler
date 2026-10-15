@@ -1,5 +1,29 @@
 # Nimbus Climate Scheduler — Change Log
 
+## Unreleased
+
+- Add an explicit per-zone thermostat selector. Multiple radiators share the
+  existing schedule and automation controls; adding or replacing members keeps
+  saved plans, drafts and the zone's stable identity in one atomic update.
+- Add and remove daily intervals, enter start times directly, and adjust timeline
+  boundaries with the keyboard. New schedules start with one all-day interval.
+- Group matching days and edit weekdays, weekends or custom day selections
+  together, while preserving existing daily plans and their 05:00 day boundary.
+- Replace ambiguous column labels with explicit Scheduled/Paused status; improve
+  form labels, focus indicators and mobile editing.
+- Add per-zone Schedule switches and mode selectors for automations (issue #2).
+  Pausing leaves thermostats under manual control and waits for in-flight writes.
+- Add global color settings, a range legend, and six Number configuration
+  entities. Panel and dashboard card share the settings, including °F conversion.
+- Preserve saved schedules and drafts through additive storage migration, assign
+  stable zone identities, reject stale saves, and synchronize automation changes
+  to open clients. Failed saves retain editable drafts.
+- Fingerprint frontend assets to invalidate stale browser caches on upgrades.
+- Preserve existing plans during zone setup, reject concurrent membership edits,
+  and defer live schedule refreshes while typing or dragging interval boundaries.
+- Show next-day changes after an all-day interval and use translated automation
+  entity names without changing existing entity IDs.
+
 ## 2026-07-22 · Quiet panel re-registration (v0.2.15)
 
 - Suppressed the spurious `Removing unknown panel nimbus-climate-scheduler`

@@ -18,10 +18,12 @@ tried to make the Nimbus Climate Scheduler sidebar integration, to bring to Home
 Assistant all those characteristics I love:
 
 - You can handle **heat and cool modes separately**.
-- You can save an entire week's schedule by **copying a day** to working days /
-  all days / weekends.
-- There are **5 setpoints per day**, which you can drag however you like on the
-  timeline, and set a cool/heat temperature for each setpoint separately.
+- **Matching days share one row**. Edit weekdays, weekends, every day, or a custom
+  selection together; switch off grouping to work on individual days.
+- **Add or remove intervals** as needed, with a separate temperature for each.
+  Choose **New interval starts** to insert anywhere in the day. Drag an existing
+  boundary, use the arrow keys (Shift for one-minute steps), or enter its start
+  time directly. The first interval always starts at 05:00.
 
 Building this around a full-time job in another profession and two toddlers
 isn't easy — I've spent a lot of hours debugging. I'd genuinely love your
@@ -103,16 +105,90 @@ wizard helps you pick your thermostats and place each one in a zone.
 
 That's it — no YAML required.
 
+### Multiple thermostats in one zone
+
+Use **Thermostats (1)** on a zone to add another radiator or thermostat. Select
+all devices for the room, then **Save thermostats**. For example, add both living
+room radiator thermostats to the Living room zone: they receive the same saved
+temperature plan and are paused/resumed together by its existing Schedule switch.
+
+New members inherit the zone's saved schedules, drafts and active/paused state.
+You can add a second radiator later without recreating the zone or changing its
+automation entity IDs. Thermostats assigned to another zone are shown with that
+zone's name. Removing a member leaves that thermostat under manual control;
+keep at least one member selected. Available Heat/Cool modes and temperature
+ranges must support the existing plan.
+
+The setup wizard also preserves existing plans when renaming zones or adding
+thermostats. Existing zones need distinct names so their separate schedules are
+not accidentally merged. Concurrent changes to the zone list are rejected;
+reopen setup to start from the current selection.
+
 ## How it works
 
 - The panel saves each zone's schedule to Home Assistant storage over the
   websocket API. Drafts you're still editing are never applied — only what you
-  **save**.
+  **save**. New drafts are cached in the editing browser until saved. A failed
+  save leaves the draft editable; a conflicting edit from another client must
+  be reloaded rather than silently overwritten.
 - The backend loop resolves the active setpoint for the current time (schedule
   days run 05:00 → 05:00) and only calls a service when the thermostat differs
   from the target, so it won't spam your devices.
 - The toggle on each zone enables or disables its schedule. Disabled means
   hands-off: your manual thermostat control is never touched.
+- New schedules start with one all-day interval. Existing schedules, including
+  separate weekday plans and unsaved drafts, are preserved. Grouping is only an
+  editing view; saving selected days leaves the other days unchanged.
+
+## Temperature colors
+
+Open the panel's **Settings** tab to change the Cold, Warm and Hot thresholds
+for heating and cooling. The intermediate Comfort band fills the gap between
+Cold and Warm. A legend shows the exact ranges next to each schedule.
+
+These global settings apply to every zone and the dashboard card; they only
+change colors, never thermostat targets. Values are displayed in your HA unit
+system and stored in Celsius so changing units does not change their meaning.
+Existing installations keep the original colors until you save new thresholds.
+
+The six thresholds are also available as **Number** configuration entities.
+Use `number.set_value` in an automation (in the entity's displayed unit). Each
+update must keep `Cold < Warm < Hot`; invalid updates leave the settings intact.
+
+## Automations
+
+Each zone has a **Schedule** switch and a **Schedule mode** select, under
+Settings → Devices & Services → Nimbus Climate Scheduler. A grouped zone has
+one pair of controls for all its thermostats. Entity IDs are assigned by Home
+Assistant; use the entity picker to find yours.
+
+- `switch.turn_off` pauses scheduling. It does **not** turn thermostats off or
+  change their targets. Once the action returns, any in-flight scheduler work
+  has finished, so a following automation action can safely take control.
+- `switch.turn_on` resumes the last selected mode and applies the **saved** plan.
+- `select.select_option` with `heat` or `cool` changes the schedule mode. While
+  paused, it selects the mode to use on resume and leaves thermostats alone.
+- Editing the Heat/Cool tabs only selects the plan being edited. The separate
+  **Run schedule** selector and switch control what actually runs.
+
+For example, before a grid peak event (replace the example entity IDs):
+
+```yaml
+actions:
+  - action: switch.turn_off
+    target:
+      entity_id: switch.living_room_schedule
+  - action: climate.set_temperature
+    target:
+      entity_id: climate.living_room
+    data:
+      temperature: 18
+```
+
+When the event ends, call `switch.turn_on` on the same schedule switch. The
+panel and dashboard card receive updates when automations change these controls.
+Controls and schedules survive restarts; renaming a zone or changing its member
+order preserves the zone's entity identity.
 
 ## Notes
 
