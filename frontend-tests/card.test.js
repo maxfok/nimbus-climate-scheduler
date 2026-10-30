@@ -196,4 +196,52 @@ describe("Nimbus Climate Scheduler card", () => {
     expect(scroller.scrollTop).toBe(42);
     expect(scroller.scrollLeft).toBe(7);
   });
+  it("updates timeline and room temperature in place, and renders at a setpoint boundary", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 5, 22, 12, 0));
+    const card = document.createElement("nimbus-climate-scheduler-card");
+    card.setConfig({ entity: ENTITY_ID });
+    card._zones = { [ENTITY_ID]: makeZone() };
+    card._zonesFetchedAt = Date.now();
+    card.hass = makeHass(undefined);
+    const rendered = card.shadowRoot.querySelector("ha-card");
+    const bubble = card.shadowRoot.querySelector("[data-ncs-bubble]");
+    const originalTime = bubble.textContent;
+    vi.setSystemTime(new Date(2026, 5, 22, 12, 10));
+    card._updateTimeline();
+    expect(card.shadowRoot.querySelector("ha-card")).toBe(rendered);
+    expect(bubble.textContent).not.toBe(originalTime);
+    const next = makeHass(undefined);
+    next.states[ENTITY_ID].attributes.current_temperature = 19.5;
+    card.hass = next;
+    expect(card.shadowRoot.querySelector("ha-card")).toBe(rendered);
+    expect(card.shadowRoot.querySelector("[data-ncs-room-temperature]").textContent).toContain("19.5");
+    vi.setSystemTime(new Date(2026, 5, 22, 23, 0));
+    card._updateTimeline();
+    expect(card.shadowRoot.querySelector("ha-card")).not.toBe(rendered);
+  });
+
+  it("updates pause reason when the backend switch changes", () => {
+    const card = document.createElement("nimbus-climate-scheduler-card");
+    card.setConfig({ entity: ENTITY_ID });
+    card._zones = { [ENTITY_ID]: makeZone() };
+    card._zonesFetchedAt = Date.now();
+    card.hass = makeHass(undefined);
+    const paused = makeHass(undefined);
+    paused.states["switch.nursery_schedule"] = { state: "off", attributes: {
+      nimbus_schedule_zone: "nursery", climate_entities: [ENTITY_ID], pause_reason: "automation",
+    } };
+    card.hass = paused;
+    expect(card.shadowRoot.textContent).toContain("Paused due to control by automation");
+    const manual = makeHass(undefined);
+    manual.states["switch.nursery_schedule"] = { state: "off", attributes: {
+      nimbus_schedule_zone: "nursery", climate_entities: [ENTITY_ID], pause_reason: "manual",
+    } };
+    card.hass = manual;
+    expect(card.shadowRoot.textContent).toContain("Paused");
+    expect(card.shadowRoot.textContent).not.toContain("Paused due to control by automation");
+    card.hass = makeHass(undefined);
+    expect(card.shadowRoot.textContent).not.toContain("Paused");
+  });
+
 });

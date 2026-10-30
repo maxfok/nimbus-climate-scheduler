@@ -1,5 +1,10 @@
 # Nimbus Climate Scheduler — Change Log
 
+## Unreleased · v0.2.16
+
+- Add per-zone schedule pause controls and explicit automation pause reasons.
+- Preserve in-place timeline and live temperature updates to reduce dashboard reflow.
+
 ## 2026-07-22 · Quiet panel re-registration (v0.2.15)
 
 - Suppressed the spurious `Removing unknown panel nimbus-climate-scheduler`

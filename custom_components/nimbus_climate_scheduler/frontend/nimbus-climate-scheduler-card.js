@@ -135,6 +135,8 @@
       next: upcomingSetpoint(savedWeek, dayIndex, activeIndex + 1) ?? setpoints[0],
       scheduleMinute,
       single: len === 1,
+      dayIndex,
+      activeIndex,
     };
   }
 
@@ -211,6 +213,13 @@
       const sig = this._hassSignature();
       if (sig !== this._lastHassSignature) {
         this._render();
+        return;
+      }
+
+      const liveSig = this._liveReadingSignature();
+      if (liveSig !== this._lastLiveReadingSignature) {
+        this._updateLiveReadings();
+        this._lastLiveReadingSignature = liveSig;
       }
     }
     get hass() { return this._hass; }
@@ -219,11 +228,10 @@
       this._maybeFetchZones();
       this._timer = setInterval(() => {
         this._maybeFetchZones(); // own REFRESH_SCHEDULE_MS guard — refetches at most every 5 min
-        // The marker/time only changes at minute precision. Rebuilding the
-        // whole shadow DOM every 30s — and on every unrelated HA state update
-        // — can make mobile dashboards visibly reflow/jump.
+        // The marker/time only changes at minute precision. Update it in place
+        // between schedule boundaries so mobile dashboards do not reflow.
         const minute = Math.floor(Date.now() / 60000);
-        if (minute !== this._lastRenderMinute) this._render();
+        if (minute !== this._lastRenderMinute) this._updateTimeline();
       }, TICK_MS);
     }
     disconnectedCallback() {
@@ -323,19 +331,36 @@
       const lang = (hass.language || "en").split("-")[0];
       const unit = hass.config?.unit_system?.temperature ?? "°C";
       const zonesReady = this._zones ? "zones" : "loading";
-      const entities = (this._entities || []).map((ent) => {
-        const st = hass.states?.[ent.entity];
-        const a = st?.attributes || {};
-        return [
-          ent.entity,
-          ent.name || "",
-          st?.state || "",
-          a.friendly_name || "",
-          a.current_temperature ?? "",
-          this._schedulePaused(ent.entity),
-        ].join(":");
-      }).join("|");
-      return [lang, unit, zonesReady, this._activeIndex ?? 0, entities].join(";");
+      const ent = this._entities?.[this._activeIndex] || this._entities?.[0];
+      const st = hass.states?.[ent?.entity];
+      const a = st?.attributes || {};
+      return [
+        lang,
+        unit,
+        zonesReady,
+        this._activeIndex ?? 0,
+        ent?.entity || "",
+        ent?.name || "",
+        st?.state || "",
+        a.friendly_name || "",
+        this._schedulePaused(ent?.entity) || "",
+      ].join(";");
+    }
+    _liveReadingSignature() {
+      const activeEnt = this._entities?.[this._activeIndex] || this._entities?.[0];
+      const room = this._hass?.states?.[activeEnt?.entity]?.attributes?.current_temperature ?? "";
+      return [activeEnt?.entity || "", room].join(":");
+    }
+    _activeScheduleSignature(zones = this._zones) {
+      const activeEnt = this._entities?.[this._activeIndex] || this._entities?.[0];
+      if (!zones) return "loading";
+      const zone = zones?.[activeEnt?.entity];
+      const mode = zone?.activeScheduleMode ?? "";
+      const savedWeek = zone?.modes?.[mode]?.savedWeek;
+      const week = DAYS.map((day) => (savedWeek?.[day] || [])
+        .map((point) => [point?.minute ?? "", point?.temp ?? ""]).join(","))
+        .join("|");
+      return [activeEnt?.entity || "", mode, week].join(";");
     }
 
     async _maybeFetchZones() {
@@ -344,11 +369,13 @@
       this._fetching = true;
       try {
         const result = await this._hass.callWS({ type: WS_GET_ZONES });
-        this._zones = result?.zones ?? {};
+        const nextZones = result?.zones ?? {};
+        const scheduleChanged = this._activeScheduleSignature(nextZones) !== this._activeScheduleSignature();
+        this._zones = nextZones;
         this._zonesFetchedAt = Date.now();
         if (this._retryTimer) clearTimeout(this._retryTimer);
         this._retryTimer = null;
-        this._render();
+        if (scheduleChanged) this._render();
       } catch (err) {
         // The integration can finish loading after Lovelace. Keep the card in
         // a truthful loading state and retry quickly instead of rendering a
@@ -364,7 +391,7 @@
       }
     }
 
-    _model(ent) {
+    _model(ent, now = new Date()) {
       if (!this._zones) return { loading: true };
       const hass = this._hass;
       const st = hass?.states?.[ent.entity];
@@ -387,7 +414,7 @@
       }
 
       const savedWeek = zone?.modes?.[mode]?.savedWeek;
-      const point = savedWeek ? schedulePointForTime(savedWeek, new Date()) : null;
+      const point = savedWeek ? schedulePointForTime(savedWeek, now) : null;
       if (!point) {
         return { name, room, state: "idle", mode };
       }
@@ -404,15 +431,16 @@
       nowM = clamp(nowM, curM, nxtM);
       const frac = hasNext && nxtM > curM ? (nowM - curM) / (nxtM - curM) : 1;
 
-      const d = new Date();
       return {
         name, room, mode,
         state: "active",
         cur, next, hasNext,
         frac,
+        scheduleDayIndex: point.dayIndex,
+        schedulePointIndex: point.activeIndex,
         curStartClock: scheduleMinuteToClockMinute(cur.minute),
         nextClock: scheduleMinuteToClockMinute(next.minute),
-        nowClock: d.getHours() * 60 + d.getMinutes(),
+        nowClock: now.getHours() * 60 + now.getMinutes(),
       };
     }
 
@@ -423,6 +451,75 @@
       if (m.mode === "heat" && diff > 0.2) return `▲ warming to ${fmtTemp(sp)}`;
       if (m.mode === "cool" && diff < -0.2) return `▼ cooling to ${fmtTemp(sp)}`;
       return `holding ${fmtTemp(sp)}`;
+    }
+    _statusText(m, t) {
+      if (m.state === "off") return m.paused === "automation" ? "Paused due to control by automation" : m.paused ? "Paused" : t.scheduleOff;
+      if (m.state === "idle") return t.noSchedule;
+      const sp = m.cur?.temp;
+      if (sp == null || m.room == null) return "";
+      const diff = sp - m.room;
+      return ((m.mode === "heat" && diff > 0.2) || (m.mode === "cool" && diff < -0.2))
+        ? `→ ${fmtTemp(sp)}`
+        : t.holding.replace("{t}", fmtTemp(sp));
+    }
+    _updateLiveReadings() {
+      const activeEnt = this._entities?.[this._activeIndex] || this._entities?.[0];
+      if (!activeEnt || !this._zones || !this.shadowRoot) return;
+      const m = this._model(activeEnt);
+      if (m.loading || m.error) return;
+
+      const temp = this.shadowRoot.querySelector("[data-ncs-room-temperature]");
+      const tempText = fmtTemp(m.room);
+      if (temp && temp.textContent !== tempText) temp.textContent = tempText;
+
+      const status = this.shadowRoot.querySelector("[data-ncs-status]");
+      const statusText = this._statusText(m, getT(this._hass));
+      if (status && status.textContent !== statusText) status.textContent = statusText;
+    }
+    _timelineSignature(m) {
+      if (m.loading) return "loading";
+      if (m.error) return `error:${m.notFound}`;
+      return [
+        m.state,
+        m.mode || "",
+        m.scheduleDayIndex ?? "",
+        m.schedulePointIndex ?? "",
+        m.cur?.minute ?? "",
+        m.cur?.temp ?? "",
+        m.next?.minute ?? "",
+        m.next?.temp ?? "",
+        m.hasNext ? "next" : "single",
+      ].join(":");
+    }
+    _updateTimeline() {
+      const now = new Date();
+      const activeEnt = this._entities?.[this._activeIndex] || this._entities?.[0];
+      const m = activeEnt ? this._model(activeEnt, now) : { loading: true };
+      if (this._timelineSignature(m) !== this._lastTimelineSignature) {
+        this._render();
+        return;
+      }
+
+      // Off, idle, loading, and error states have no time-dependent timeline.
+      // Keep their stable DOM intact until a structural change requires a render.
+      if (m.state !== "active") {
+        this._lastRenderMinute = Math.floor(now.getTime() / 60000);
+        return;
+      }
+
+      const markerLeft = (m.frac * 64).toFixed(2);
+      const marker = this.shadowRoot?.querySelector("[data-ncs-marker]");
+      const caret = this.shadowRoot?.querySelector("[data-ncs-caret]");
+      const bubble = this.shadowRoot?.querySelector("[data-ncs-bubble]");
+      if (!marker || !caret || !bubble) {
+        this._render();
+        return;
+      }
+      marker.style.left = `${markerLeft}%`;
+      caret.style.left = `${markerLeft}%`;
+      bubble.style.left = `clamp(28px, ${markerLeft}%, calc(100% - 28px))`;
+      bubble.textContent = fmtHM(m.nowClock);
+      this._lastRenderMinute = Math.floor(now.getTime() / 60000);
     }
 
     _render() {
@@ -540,16 +637,7 @@
         const accent = meta.accent;
         const modeLabel = m.state === "off" ? t.off : m.state === "idle" ? t.idle : m.mode === "cool" ? t.cooling : t.heating;
 
-        let status;
-        if (m.state === "off") status = m.paused === "automation" ? "Paused due to control by automation" : m.paused ? "Paused" : t.scheduleOff;
-        else if (m.state === "idle") status = t.noSchedule;
-        else {
-          const sp = m.cur?.temp;
-          if (sp != null && m.room != null) {
-            const d = sp - m.room;
-            status = ((m.mode === "heat" && d > 0.2) || (m.mode === "cool" && d < -0.2)) ? `→ ${fmtTemp(sp)}` : t.holding.replace("{t}", fmtTemp(sp));
-          } else status = "";
-        }
+        const status = this._statusText(m, t);
 
         const pill = `<span class="pill"><span class="pill-dot"></span>${modeLabel}</span>`;
         // Active state floats a now-bubble above the track — give it clearance so it
@@ -561,10 +649,10 @@
               <div class="avatar">${modeIconSvg(meta.icon)}</div>
               <div style="min-width:0;">
                 <div class="name-row"><div class="name">${esc(m.name)}</div>${pill}</div>
-                <div class="sub">${status}</div>
+                <div class="sub" data-ncs-status>${status}</div>
               </div>
             </div>
-            <div class="temp">${fmtTemp(m.room)}</div>
+            <div class="temp" data-ncs-room-temperature>${fmtTemp(m.room)}</div>
           </div>`;
 
         const openLink = `<span class="open open-text open-control" role="button" tabindex="0">${t.openScheduler}</span><button type="button" class="open open-icon open-control" aria-label="${esc(t.openScheduler)}"><ha-icon icon="mdi:tune-variant"></ha-icon></button>`;
@@ -584,9 +672,9 @@
             : "";
           // Line + caret sit exactly on the marker; the bubble is clamped (min-inset)
           // so it never overhangs the card edge — it just shifts right near the start.
-          const marker = `<div class="marker" style="left:${markerLeft}%;"></div>
-            <div class="bubble" style="left:clamp(28px, ${markerLeft}%, calc(100% - 28px));">${fmtHM(m.nowClock)}</div>
-            <div class="caret" style="left:${markerLeft}%;"></div>`;
+          const marker = `<div class="marker" data-ncs-marker style="left:${markerLeft}%;"></div>
+            <div class="bubble" data-ncs-bubble style="left:clamp(28px, ${markerLeft}%, calc(100% - 28px));">${fmtHM(m.nowClock)}</div>
+            <div class="caret" data-ncs-caret style="left:${markerLeft}%;"></div>`;
           const axisRight = m.hasNext
             ? `<span class="c" style="left:${curW}%; color:${nextColor};">${fmtTemp(m.next.temp)} ${t.at} ${fmtHM(m.nextClock)}</span>`
             : `<span class="c" style="left:100%; transform:translateX(-100%);">${t.noMore}</span>`;
@@ -611,7 +699,9 @@
 
       this.shadowRoot.innerHTML = STYLE + tabs + `<ha-card>${body}</ha-card>`;
       this._lastHassSignature = this._hassSignature();
+      this._lastLiveReadingSignature = this._liveReadingSignature();
       this._lastRenderMinute = Math.floor(Date.now() / 60000);
+      this._lastTimelineSignature = this._timelineSignature(m);
 
       this.shadowRoot.querySelectorAll(".ncs-tab").forEach((btn) => {
         btn.addEventListener("click", (ev) => {
