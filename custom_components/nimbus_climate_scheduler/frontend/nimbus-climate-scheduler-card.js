@@ -404,9 +404,9 @@
       const climateOff = st.state === "off" || st.state === "unavailable";
       const mode = zone?.activeScheduleMode ?? null;
 
-      if (this._schedulePaused(ent.entity) || !mode) {
-        return { name, room, state: "off", paused: this._schedulePaused(ent.entity) || "manual" };
-      }
+      const paused = this._schedulePaused(ent.entity);
+      if (!mode) return { name, room, state: "off", noActiveSchedule: true, paused };
+      if (paused) return { name, room, state: "off", paused };
 
       // Climate off -> "off" state.
       if (climateOff || !mode) {
@@ -453,7 +453,11 @@
       return `holding ${fmtTemp(sp)}`;
     }
     _statusText(m, t) {
-      if (m.state === "off") return m.paused === "automation" ? "Paused due to control by automation" : m.paused ? "Paused" : t.scheduleOff;
+      if (m.state === "off") {
+        const pause = m.paused === "automation" ? "Paused due to control by automation" : m.paused ? "Paused" : "";
+        if (m.noActiveSchedule) return pause ? `No active schedule · ${pause}` : "No active schedule";
+        return pause || t.scheduleOff;
+      }
       if (m.state === "idle") return t.noSchedule;
       const sp = m.cur?.temp;
       if (sp == null || m.room == null) return "";
@@ -658,7 +662,7 @@
         const openLink = `<span class="open open-text open-control" role="button" tabindex="0">${t.openScheduler}</span><button type="button" class="open open-icon open-control" aria-label="${esc(t.openScheduler)}"><ha-icon icon="mdi:tune-variant"></ha-icon></button>`;
         let track;
         if (m.state === "off") {
-          track = `<div class="flat hatch"></div><div class="axis"><span class="l">${m.paused === "automation" ? "Paused due to control by automation" : m.paused ? "Paused" : t.scheduleOffLabel}</span>${openLink}</div>`;
+          track = `<div class="flat hatch"></div><div class="axis"><span class="l">${this._statusText(m, t)}</span>${openLink}</div>`;
         } else if (m.state === "idle") {
           track = `<div class="flat neutral">${t.noScheduleLabel}</div><div class="axis"><span class="l">${t.awaiting}</span>${openLink}</div>`;
         } else {

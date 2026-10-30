@@ -127,4 +127,19 @@ describe("Nimbus Climate Scheduler panel", () => {
 
     expect(panel._hass.callService).not.toHaveBeenCalled();
   });
+  it.each([
+    [null, "on", null, "No active schedule"],
+    ["heat", "on", null, "Heating"],
+    ["heat", "off", "manual", "Paused"],
+    ["heat", "off", "automation", "Paused due to control by automation"],
+    [null, "off", "manual", "No active schedule · Paused"],
+    [null, "off", "automation", "No active schedule · Paused due to control by automation"],
+  ])("shows schedule and pause independently (%s, %s, %s)", (mode, state, reason, expected) => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    panel._hass = { states: { "switch.room_schedule": { state, attributes: {
+      nimbus_schedule_zone: "room", climate_entities: ["climate.room"], pause_reason: reason,
+    } } } };
+    expect(panel.zoneStatusText({ entityIds: ["climate.room"], activeScheduleMode: mode, hvacMode: "heat" })).toBe(expected);
+  });
+
 });

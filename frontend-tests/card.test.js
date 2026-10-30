@@ -244,4 +244,26 @@ describe("Nimbus Climate Scheduler card", () => {
     expect(card.shadowRoot.textContent).not.toContain("Paused");
   });
 
+  it.each([
+    [null, "on", null, "No active schedule", false],
+    ["heat", "on", null, null, true],
+    ["heat", "off", "manual", "Paused", false],
+    ["heat", "off", "automation", "Paused due to control by automation", false],
+    [null, "off", "manual", "No active schedule · Paused", false],
+    [null, "off", "automation", "No active schedule · Paused due to control by automation", false],
+  ])("displays schedule and switch state separately (%s, %s, %s)", (mode, state, reason, expected, active) => {
+    const card = document.createElement("nimbus-climate-scheduler-card");
+    card.setConfig({ entity: ENTITY_ID });
+    card._zones = { [ENTITY_ID]: { ...makeZone(), activeScheduleMode: mode } };
+    card._zonesFetchedAt = Date.now();
+    const hass = makeHass(undefined);
+    hass.states["switch.nursery_schedule"] = { state, attributes: {
+      nimbus_schedule_zone: "nursery", climate_entities: [ENTITY_ID], pause_reason: reason,
+    } };
+    card.hass = hass;
+    const status = card.shadowRoot.querySelector("[data-ncs-status]").textContent;
+    if (expected) expect(status).toBe(expected);
+    expect(card.shadowRoot.querySelector(".head").dataset.state === "active").toBe(active);
+  });
+
 });
