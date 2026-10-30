@@ -354,4 +354,16 @@ describe("Nimbus Climate Scheduler panel", () => {
     expect(panel._hass.callWS).toHaveBeenCalledTimes(1);
   });
 
+  it("retains five default setpoints per day for both Heat and Cool", () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    const schedules = panel.makeDefaultSchedules(climateState("heat"));
+    for (const mode of ["heat", "cool"]) {
+      for (const day of ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]) {
+        expect(schedules[mode].savedWeek[day]).toHaveLength(5);
+        expect(schedules[mode].draftWeek[day]).toHaveLength(5);
+        expect(schedules[mode].savedWeek[day][0].minute).toBe(0);
+      }
+    }
+  });
+
 });
