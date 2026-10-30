@@ -7,6 +7,7 @@ import voluptuous as vol
 from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
@@ -69,23 +70,27 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
         connection.send_result(msg["id"], data)
 
     @websocket_api.websocket_command({
-        vol.Required("type"): f"{DOMAIN}/save_zone",
-        vol.Required("entity_id"): cv.entity_domain("climate"),
+        vol.Required("type"): f"{DOMAIN}/save_group_schedule",
+        vol.Required("zone_id"): str,
+        vol.Required("expected_revision"): vol.All(int, vol.Range(min=0)),
         vol.Required("data"): _ZONE_DATA_SCHEMA,
     })
     @websocket_api.require_admin
     @websocket_api.async_response
-    async def websocket_save_zone(
-        hass: HomeAssistant,
-        connection: websocket_api.ActiveConnection,
-        msg: dict[str, Any],
-    ) -> None:
-        scheduler: NimbusClimateScheduler = hass.data[DOMAIN]["scheduler"]
-        await scheduler.async_set_zone(msg["entity_id"], msg["data"])
-        connection.send_result(msg["id"], {"saved": msg["entity_id"]})
+    async def websocket_save_group_schedule(hass, connection, msg):
+        scheduler = hass.data[DOMAIN]["scheduler"]
+        try:
+            revision = await scheduler.async_set_group_schedule(
+                msg["zone_id"], msg["expected_revision"], msg["data"]
+            )
+        except HomeAssistantError as err:
+            connection.send_error(msg["id"], "conflict", str(err))
+            return
+        connection.send_result(msg["id"], {"revision": revision, "store_revision": scheduler.store.data.get("store_revision", 0)})
 
     @websocket_api.websocket_command({
         vol.Required("type"): f"{DOMAIN}/set_climates",
+        vol.Required("expected_store_revision"): vol.All(int, vol.Range(min=0)),
         vol.Required("climates"): [
             vol.Schema({
                 vol.Required("entity"): cv.entity_domain("climate"),
@@ -102,8 +107,14 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
     ) -> None:
         store = hass.data[DOMAIN]["store"]
         scheduler = hass.data[DOMAIN]["scheduler"]
-        await scheduler.async_set_climates(msg["climates"])
-        connection.send_result(msg["id"], {"climates": store.get_climates()})
+        try:
+            await scheduler.async_set_climates(msg["climates"], msg["expected_store_revision"])
+        except HomeAssistantError as err:
+            connection.send_error(msg["id"], "conflict", str(err))
+            return
+        connection.send_result(msg["id"], {"climates": store.get_climates(),
+            "store_revision": store.data.get("store_revision", 0),
+            "schedule_revisions": store.data.get("schedule_revisions", {})})
 
     @websocket_api.websocket_command({
         vol.Required("type"): f"{DOMAIN}/apply_now",
@@ -119,6 +130,6 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
         connection.send_result(msg["id"], await scheduler.async_tick())
 
     websocket_api.async_register_command(hass, websocket_get_zones)
-    websocket_api.async_register_command(hass, websocket_save_zone)
+    websocket_api.async_register_command(hass, websocket_save_group_schedule)
     websocket_api.async_register_command(hass, websocket_set_climates)
     websocket_api.async_register_command(hass, websocket_apply_now)

@@ -214,15 +214,15 @@ class NimbusClimateScheduler:
             plan.entity_id,
         )
 
-    async def async_set_zone(self, entity_id: str, zone_data: dict[str, Any]) -> None:
-        """Persist a zone schedule from the frontend."""
+    async def async_set_group_schedule(self, group_id: str, expected_revision: int, zone_data: dict[str, Any]) -> int:
+        """Serialize group writes with ticks and pause transitions."""
         async with self._lock:
-            await self.store.async_set_zone(entity_id, zone_data)
+            return await self.store.async_set_group_schedule(group_id, expected_revision, zone_data)
 
-    async def async_set_climates(self, climates: list[dict[str, Any]]) -> None:
+    async def async_set_climates(self, climates: list[dict[str, Any]], expected_store_revision: int) -> None:
         """Serialize zone setup with ticks and pause changes."""
         async with self._lock:
-            await self.store.async_set_climates(climates)
+            await self.store.async_set_climates(climates, expected_store_revision)
 
     async def async_set_automation_pause(self, entity_ids: list[str], paused: bool, reason: str = "manual") -> None:
         """Pause a group after any in-flight tick, without changing its schedule."""

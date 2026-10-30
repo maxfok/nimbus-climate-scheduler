@@ -299,6 +299,8 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     try {
       const result = await this._hass.callWS({ type: "nimbus_climate_scheduler/get_zones" });
       const zones = result?.zones ?? {};
+      this.scheduleRevisions = { ...(result?.schedule_revisions ?? {}) };
+      this.storeRevision = result?.store_revision ?? 0;
       this.serverClimates = Array.isArray(result?.climates) && result.climates.length
         ? result.climates
         : null;
@@ -333,7 +335,6 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
         this.syncZonesFromHass();
         this.renderIfReady();
       }
-      await this.pushAllSchedulesToBackend();
     } catch {
       this.backendSyncComplete = false;
       // Don't get stuck in the frontend fallback forever — allow a retry so the
@@ -346,12 +347,8 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     }
   }
 
-  async pushAllSchedulesToBackend() {
-    if (!this._hass?.callWS) return;
-    await Promise.all(this.zones.map((zone) => this.saveZoneToBackend(zone)));
-  }
-
   openSetup() {
+    this.setupStoreRevision = this.storeRevision ?? 0;
     this.setupDraft = null;
     this.showSetup = true;
     this.render();
@@ -411,13 +408,21 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
 
     if (this._hass?.callWS) {
       try {
-        await this._hass.callWS({
+        const result = await this._hass.callWS({
           type: "nimbus_climate_scheduler/set_climates",
+          expected_store_revision: this.setupStoreRevision ?? this.storeRevision ?? 0,
           climates,
         });
-      } catch {
-        // Backend unavailable; keep the selection client-side anyway.
+        climates.splice(0, climates.length, ...result.climates);
+        this.storeRevision = result.store_revision;
+        this.scheduleRevisions = { ...(result.schedule_revisions ?? {}) };
+      } catch (error) {
+        this.applyResultData = { applied: [], skippedOff: [], skippedMode: [], failed: [{ entityId: "Zone setup", error: error?.message ?? "Save failed" }] };
+        this.renderIfReady();
+        return;
       }
+    } else {
+      return;
     }
 
     this.serverClimates = climates;
@@ -426,7 +431,16 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     this.zonesSignature = null;
     this.syncZonesFromHass();
     this.render();
-    await this.pushAllSchedulesToBackend();
+    // Initialize only zones with no saved backend schedule. Existing weeks and
+    // drafts are never rewritten merely because setup was opened.
+    const backend = await this._hass.callWS({ type: "nimbus_climate_scheduler/get_zones" });
+    this.scheduleRevisions = { ...(backend.schedule_revisions ?? {}) };
+    this.storeRevision = backend.store_revision ?? 0;
+    for (const zone of this.zones) {
+      if (!(zone.entityIds ?? [zone.entityId]).some(id => backend.zones?.[id])) {
+        await this.saveZoneToBackend(zone);
+      }
+    }
   }
 
   renderSetup() {
@@ -508,17 +522,33 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     this.setupWizard.append(title, hint, list, actions);
   }
 
-  async saveZoneToBackend(zone) {
-    if (!zone.entityId || !this._hass?.callWS) return;
-    // Every entity in the zone carries the shared schedule, so the backend
-    // scheduler drives each thermostat in the group.
-    const data = serializeZoneSchedule(zone);
-    await Promise.all((zone.entityIds ?? [zone.entityId]).map((entityId) =>
-      this._hass.callWS({
-        type: "nimbus_climate_scheduler/save_zone",
-        entity_id: entityId,
+  async saveZoneToBackend(zone, prepare = null, onSaved = null) {
+    if (!zone.entityId || !this._hass?.callWS || !this.backendSyncComplete) {
+      throw new Error("Scheduler backend unavailable; changes remain unsaved.");
+    }
+    const config = (this.serverClimates ?? []).find(item => item.entity === zone.entityId);
+    const groupId = config?.zone_id;
+    if (!groupId) throw new Error("Zone identity unavailable; reload before saving.");
+    this.zoneSaveQueues ??= new Map();
+    const previous = this.zoneSaveQueues.get(groupId) ?? Promise.resolve();
+    const operation = previous.then(async () => {
+      const data = serializeZoneSchedule(zone);
+      if (prepare) prepare(data);
+      const result = await this._hass.callWS({
+        type: "nimbus_climate_scheduler/save_group_schedule",
+        zone_id: groupId,
+        expected_revision: this.scheduleRevisions?.[groupId] ?? 0,
         data,
-      })));
+      });
+      this.scheduleRevisions ??= {};
+      this.scheduleRevisions[groupId] = result.revision;
+      if (result.store_revision !== undefined) this.storeRevision = result.store_revision;
+      onSaved?.(data);
+      return data;
+    });
+    this.zoneSaveQueues.set(groupId, operation);
+    try { return await operation; }
+    finally { if (this.zoneSaveQueues.get(groupId) === operation) this.zoneSaveQueues.delete(groupId); }
   }
 
   getConfiguredClimates() {
@@ -1259,13 +1289,20 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
 
     if (this._hass?.callWS) {
       try {
-        await this._hass.callWS({
+        const result = await this._hass.callWS({
           type: "nimbus_climate_scheduler/set_climates",
+          expected_store_revision: this.storeRevision ?? 0,
           climates: remaining,
         });
-      } catch {
-        // Backend unavailable; apply the removal client-side anyway.
+        this.storeRevision = result.store_revision;
+        this.scheduleRevisions = { ...(result.schedule_revisions ?? {}) };
+      } catch (error) {
+        this.applyResultData = { applied: [], skippedOff: [], skippedMode: [], failed: [{ entityId: zone.name, error: error?.message ?? "Zone removal failed" }] };
+        this.renderIfReady();
+        return;
       }
+    } else {
+      return;
     }
 
     for (const entityId of zoneEntities) {
@@ -1385,107 +1422,11 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     const lastRun = this.lastSchedulerRun
       ? `Last run ${formatClockTime(this.lastSchedulerRun)}`
       : "Waiting";
-    this.schedulerStatus.textContent = `${this.schedulerRunning ? "Fallback running" : "Frontend fallback"} · ${lastRun}`;
+    this.schedulerStatus.textContent = `Backend unavailable · ${lastRun}`;
   }
 
   async runSchedulerTick() {
-    if (this.backendSyncComplete || this.applying || this.schedulerRunning || !this._hass?.callService) return;
-
-    const plans = this.buildApplyPlans()
-      // Hands-off: the automatic tick must never turn a disabled zone off — that
-      // would override manual control. "off" plans stay only for explicit Apply.
-      .filter((plan) => plan.action !== "off")
-      .map((plan) => this.withNeedsApply(plan))
-      .filter((plan) => plan.needsApply);
-
-    this.schedulerRunning = true;
-    this.renderIfReady();
-
-    const result = await this.applyPlans(plans);
-
-    this.lastSchedulerRun = new Date();
-    this.schedulerRunning = false;
-    if (result.applied.length || result.failed.length) {
-      this.applyResultData = result;
-    }
-    this.renderIfReady();
-  }
-
-
-  async applyPlans(plans) {
-    const result = {
-      applied: [],
-      skippedOff: plans.filter((plan) => plan.action === "off" && !plan.canApply),
-      skippedMode: [],
-      failed: [],
-    };
-
-    if (!this._hass?.callService) {
-      result.failed.push(...plans.filter((plan) => plan.canApply).map((plan) => ({
-        ...plan,
-        error: "Home Assistant service API unavailable",
-      })));
-      return result;
-    }
-
-    for (const plan of plans) {
-      if (!plan.canApply) continue;
-
-      try {
-        await this.applyPlan(plan);
-        result.applied.push(plan);
-      } catch (error) {
-        result.failed.push({
-          ...plan,
-          error: error?.message ?? String(error),
-        });
-      }
-    }
-
-    return result;
-  }
-
-  withNeedsApply(plan) {
-    if (plan.action === "off") {
-      return {
-        ...plan,
-        needsApply: plan.canApply,
-      };
-    }
-
-    const targetMatches = Number(plan.currentTargetTemp) === Number(plan.targetTemp);
-    return {
-      ...plan,
-      needsApply: plan.hvacMode !== plan.mode || !targetMatches,
-    };
-  }
-
-  async applyPlan(plan) {
-    const entityIds = plan.entityIds ?? [plan.entityId];
-
-    if (plan.action === "off") {
-      await this._hass.callService("climate", "set_hvac_mode", {
-        entity_id: entityIds,
-        hvac_mode: "off",
-      });
-      return;
-    }
-
-    await this._hass.callService("climate", "set_hvac_mode", {
-      entity_id: entityIds,
-      hvac_mode: plan.mode,
-    });
-
-    if (plan.hvacMode !== plan.mode) {
-      // Let the device switch modes before sending the setpoint, otherwise
-      // it can land on the old mode and get dropped.
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-
-    await this._hass.callService("climate", "set_temperature", {
-      entity_id: entityIds,
-      temperature: plan.targetTemp,
-    });
+    // Only the backend scheduler may issue climate commands.
   }
 
   setZoneScheduleMode(zone, mode) {
@@ -1528,23 +1469,11 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
         this.selectedZoneId = zone.id;
       }
 
-      // Enabling goes through the backend tick (single, ordered apply);
-      // turning off and the no-backend fallback keep the direct call.
+      // Saving and applying always uses the backend scheduler.
       if (enabling && this.backendSyncComplete && this._hass?.callWS) {
         await this.saveAndApply(zone);
-        return;
       }
 
-      const plan = buildZoneApplyPlan(zone, this.getActiveModeSchedule(zone)?.savedWeek);
-      this.applying = true;
-      this.applyResultData = null;
-      this.renderIfReady();
-
-      const result = await this.applyPlans(plan ? [plan] : []);
-
-      this.applying = false;
-      this.applyResultData = result;
-      this.renderIfReady();
     });
     return button;
   }
@@ -1636,23 +1565,25 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     this.render();
   }
 
-  saveZoneMode(zone, mode) {
+  async saveZoneMode(zone, mode) {
     const schedule = this.getModeSchedule(zone, mode);
-    schedule.savedWeek = cloneWeek(schedule.draftWeek);
-    schedule.dirty = false;
-    this.persistZone(zone);
-    this.saveAndApply(zone);
+    const snapshot = cloneWeek(schedule.draftWeek);
+    await this.saveAndApply(zone, data => { data.modes[mode].savedWeek = cloneWeek(snapshot); }, () => {
+      schedule.savedWeek = cloneWeek(snapshot);
+      schedule.dirty = !weeksEqual(schedule.savedWeek, schedule.draftWeek);
+    });
   }
 
-  saveZoneDay(zone, mode, day) {
+  async saveZoneDay(zone, mode, day) {
     const schedule = this.getModeSchedule(zone, mode);
-    schedule.savedWeek[day] = cloneSetpoints(schedule.draftWeek[day]);
-    schedule.dirty = !weeksEqual(schedule.savedWeek, schedule.draftWeek);
-    this.persistZone(zone);
-    this.saveAndApply(zone);
+    const snapshot = cloneSetpoints(schedule.draftWeek[day]);
+    await this.saveAndApply(zone, data => { data.modes[mode].savedWeek[day] = cloneSetpoints(snapshot); }, () => {
+      schedule.savedWeek[day] = cloneSetpoints(snapshot);
+      schedule.dirty = !weeksEqual(schedule.savedWeek, schedule.draftWeek);
+    });
   }
 
-  async saveAndApply(zone) {
+  async saveAndApply(zone, prepare = null, onSaved = null) {
     // Saving pushes the schedule to the device right away through the
     // backend tick — no separate "Apply" step needed.
     if (!this.backendSyncComplete || !this._hass?.callWS) return;
@@ -1665,7 +1596,7 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
       // The save must succeed before applying — otherwise the backend would
       // apply the PREVIOUS schedule. Let a failure bubble to the outer catch
       // (reported as failed) instead of swallowing it and applying stale data.
-      await this.saveZoneToBackend(zone);
+      await this.saveZoneToBackend(zone, prepare, onSaved);
       const result = await this._hass.callWS({ type: "nimbus_climate_scheduler/apply_now" });
       this.applyResultData = {
         applied: (result?.applied ?? []).map((entityId) => ({ entityId })),
@@ -1707,7 +1638,10 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
       activeScheduleMode: zone.activeScheduleMode,
       modes: zone.modes,
     });
-    this.saveZoneToBackend(zone).catch(() => undefined);
+    this.saveZoneToBackend(zone).catch((error) => {
+      this.applyResultData = { applied: [], skippedOff: [], skippedMode: [], failed: [{ entityId: zone.name, error: error?.message ?? "Save failed; changes remain unsaved." }] };
+      this.renderIfReady();
+    });
   }
 
   showBubble(event, scheduleMinute) {
