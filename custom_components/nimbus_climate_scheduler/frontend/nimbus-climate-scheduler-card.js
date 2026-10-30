@@ -310,6 +310,13 @@
       restore();
       if (typeof requestAnimationFrame === "function") requestAnimationFrame(restore);
     }
+    _schedulePaused(entityId) {
+      const state = Object.values(this._hass?.states ?? {}).find((item) =>
+        item.attributes?.nimbus_schedule_zone && item.state === "off" &&
+        (item.attributes.climate_entities ?? []).includes(entityId));
+      return state ? (state.attributes.pause_reason || "manual") : null;
+    }
+
     _hassSignature() {
       const hass = this._hass;
       if (!hass) return "no-hass";
@@ -325,6 +332,7 @@
           st?.state || "",
           a.friendly_name || "",
           a.current_temperature ?? "",
+          this._schedulePaused(ent.entity),
         ].join(":");
       }).join("|");
       return [lang, unit, zonesReady, this._activeIndex ?? 0, entities].join(";");
@@ -369,7 +377,11 @@
       const climateOff = st.state === "off" || st.state === "unavailable";
       const mode = zone?.activeScheduleMode ?? null;
 
-      // Schedule disabled for this zone (or climate off) -> "off" state.
+      if (this._schedulePaused(ent.entity) || !mode) {
+        return { name, room, state: "off", paused: this._schedulePaused(ent.entity) || "manual" };
+      }
+
+      // Climate off -> "off" state.
       if (climateOff || !mode) {
         return { name, room, state: "off" };
       }
@@ -529,7 +541,7 @@
         const modeLabel = m.state === "off" ? t.off : m.state === "idle" ? t.idle : m.mode === "cool" ? t.cooling : t.heating;
 
         let status;
-        if (m.state === "off") status = t.scheduleOff;
+        if (m.state === "off") status = m.paused === "automation" ? "Paused due to control by automation" : m.paused ? "Paused" : t.scheduleOff;
         else if (m.state === "idle") status = t.noSchedule;
         else {
           const sp = m.cur?.temp;
@@ -558,7 +570,7 @@
         const openLink = `<span class="open open-text open-control" role="button" tabindex="0">${t.openScheduler}</span><button type="button" class="open open-icon open-control" aria-label="${esc(t.openScheduler)}"><ha-icon icon="mdi:tune-variant"></ha-icon></button>`;
         let track;
         if (m.state === "off") {
-          track = `<div class="flat hatch"></div><div class="axis"><span class="l">${t.scheduleOffLabel}</span>${openLink}</div>`;
+          track = `<div class="flat hatch"></div><div class="axis"><span class="l">${m.paused === "automation" ? "Paused due to control by automation" : m.paused ? "Paused" : t.scheduleOffLabel}</span>${openLink}</div>`;
         } else if (m.state === "idle") {
           track = `<div class="flat neutral">${t.noScheduleLabel}</div><div class="axis"><span class="l">${t.awaiting}</span>${openLink}</div>`;
         } else {

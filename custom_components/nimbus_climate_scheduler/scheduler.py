@@ -130,6 +130,8 @@ class NimbusClimateScheduler:
 
     def build_plan(self, entity_id: str, now) -> ApplyPlan | None:
         """Build the desired HA service plan for a climate entity."""
+        if self.store.is_automation_paused(entity_id):
+            return None
         state = self.hass.states.get(entity_id)
         if state is None:
             return None
@@ -214,7 +216,20 @@ class NimbusClimateScheduler:
 
     async def async_set_zone(self, entity_id: str, zone_data: dict[str, Any]) -> None:
         """Persist a zone schedule from the frontend."""
-        await self.store.async_set_zone(entity_id, zone_data)
+        async with self._lock:
+            await self.store.async_set_zone(entity_id, zone_data)
+
+    async def async_set_climates(self, climates: list[dict[str, Any]]) -> None:
+        """Serialize zone setup with ticks and pause changes."""
+        async with self._lock:
+            await self.store.async_set_climates(climates)
+
+    async def async_set_automation_pause(self, entity_ids: list[str], paused: bool, reason: str = "manual") -> None:
+        """Pause a group after any in-flight tick, without changing its schedule."""
+        async with self._lock:
+            await self.store.async_set_automation_pause(entity_ids, paused, reason)
+        if not paused:
+            await self.async_tick()
 
     def as_dict(self) -> dict[str, Any]:
         """Return public scheduler state for the frontend."""

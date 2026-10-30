@@ -16,6 +16,7 @@ from homeassistant.components.lovelace.const import (
 from homeassistant.const import CONF_ID, CONF_TYPE, CONF_URL, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.discovery import async_load_platform
 
 from .const import (
     CARD_FALLBACK_MODULE_URL,
@@ -64,6 +65,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.data.setdefault(DOMAIN, {})
     if DOMAIN in config:
         await _async_setup_scheduler(hass, config.get(DOMAIN) or {}, config, source="yaml")
+        await async_load_platform(hass, "switch", DOMAIN, {}, config)
     return True
 
 
@@ -72,12 +74,16 @@ async def async_setup_entry(hass: HomeAssistant, entry) -> bool:
     data = hass.data.setdefault(DOMAIN, {})
     if "scheduler" not in data:
         await _async_setup_scheduler(hass, {}, {}, source="config_entry")
+    if data.get("source") != "yaml":
+        await hass.config_entries.async_forward_entry_setups(entry, ["switch"])
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry) -> bool:
     """Unload the config entry."""
     data = hass.data.get(DOMAIN) or {}
+    if data.get("source") != "yaml" and not await hass.config_entries.async_unload_platforms(entry, ["switch"]):
+        return False
     if data.get("source") == "config_entry" and "scheduler" in data:
         data["scheduler"].stop()
         frontend.async_remove_panel(hass, PANEL_URL)
@@ -96,6 +102,7 @@ async def _async_setup_scheduler(
 
     store = NimbusClimateSchedulerStore(hass)
     await store.async_load()
+    await store.async_initialize_groups([{ "entity": c.entity, "name": c.name } for c in climates])
 
     scheduler = NimbusClimateScheduler(
         hass=hass,

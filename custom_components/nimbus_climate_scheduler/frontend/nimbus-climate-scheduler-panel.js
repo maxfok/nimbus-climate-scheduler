@@ -230,6 +230,13 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     }, delay);
   }
 
+  zonePauseState(zone) {
+    const states = Object.values(this._hass?.states ?? {});
+    const state = states.find((item) => item.attributes?.nimbus_schedule_zone && item.state === "off" &&
+      (item.attributes.climate_entities ?? []).some((id) => zone.entityIds.includes(id)));
+    return state ? (state.attributes.pause_reason || "manual") : null;
+  }
+
   syncZonesFromHass() {
     const climateConfigs = this.getConfiguredClimates();
     if (!climateConfigs.length || !this._hass?.states) return false;
@@ -264,6 +271,7 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
       zone.targetTemp,
       zone.hvacMode,
       zone.activeScheduleMode,
+      this.zonePauseState(zone),
       zone.supportedScheduleModes,
       zone.minTemp,
       zone.maxTemp,
@@ -806,13 +814,14 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
       node.classList.toggle("expanded", zone.id === this.selectedZoneId);
       this.renderZoneName(node.querySelector(".zone-name"), zone);
       node.querySelector(".zone-temp").textContent = temperatureLabel(zone.currentTemp);
-      node.querySelector(".zone-mode").textContent = modeLabel(zone.hvacMode);
+      node.querySelector(".zone-mode").textContent = this.zonePauseState(zone) === "automation" ? "Paused due to control by automation"
+        : this.zonePauseState(zone) || !zone.activeScheduleMode ? "Paused" : modeLabel(zone.hvacMode);
 
       if (schedule.dirty) {
         node.querySelector(".zone-mode").append(this.makeDirtyBadge());
       }
 
-      node.classList.toggle("inactive", !zone.activeScheduleMode);
+      node.classList.toggle("inactive", !zone.activeScheduleMode || this.zonePauseState(zone));
       node.querySelector(".zone-switch-slot").append(this.renderZoneSwitch(zone));
       node.querySelector(".zone-header").append(this.renderZoneActions(zone));
       node.querySelector(".zone-header").addEventListener("click", () => {

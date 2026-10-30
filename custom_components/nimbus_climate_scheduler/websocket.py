@@ -101,7 +101,8 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
         msg: dict[str, Any],
     ) -> None:
         store = hass.data[DOMAIN]["store"]
-        await store.async_set_climates(msg["climates"])
+        scheduler = hass.data[DOMAIN]["scheduler"]
+        await scheduler.async_set_climates(msg["climates"])
         connection.send_result(msg["id"], {"climates": store.get_climates()})
 
     @websocket_api.websocket_command({

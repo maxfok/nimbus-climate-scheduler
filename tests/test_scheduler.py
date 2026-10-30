@@ -38,6 +38,9 @@ class FakeStore:
     def get_zone(self, entity_id: str):
         return self.zones.get(entity_id)
 
+    def is_automation_paused(self, entity_id: str) -> bool:
+        return False
+
     def get_climates(self) -> list[dict]:
         return []
 
