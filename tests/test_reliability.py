@@ -176,3 +176,62 @@ async def test_distinct_zones_save_with_independent_schedule_revisions(group_bac
     assert await scheduler.async_set_group_schedule('other', 0, make_zone()) == 1
     assert store.data['schedule_revisions'] == {'room': 1, 'other': 1}
     assert store.data['store_revision'] == 2
+
+
+@pytest.mark.parametrize('attributes', [
+    {'hvac_modes': ['cool'], 'min_temp': 5, 'max_temp': 35, 'target_temp_step': 0.5},
+    {'hvac_modes': ['heat'], 'min_temp': 25, 'max_temp': 30, 'target_temp_step': 0.5},
+    {'hvac_modes': ['heat'], 'min_temp': 5, 'max_temp': 35, 'target_temp_step': 3},
+])
+async def test_adding_incompatible_thermostat_is_rejected_atomically(hass, group_backend, attributes):
+    store, scheduler = group_backend
+    base = {'hvac_modes': ['heat'], 'min_temp': 5, 'max_temp': 35, 'target_temp_step': 0.5}
+    hass.states.async_set('climate.one', 'heat', base)
+    hass.states.async_set('climate.two', 'heat', base)
+    hass.states.async_set('climate.new', 'heat', attributes)
+    before = deepcopy(store.data)
+    climates = [{'entity': e, 'name': 'Room'} for e in ('climate.one', 'climate.two', 'climate.new')]
+    with pytest.raises(HomeAssistantError):
+        await scheduler.async_set_climates(climates, 0)
+    assert store.data == before
+
+
+async def test_adding_compatible_thermostat_preserves_schedule_and_pause(hass, group_backend):
+    store, scheduler = group_backend
+    attrs = {'hvac_modes': ['heat', 'cool'], 'min_temp': 5, 'max_temp': 35, 'target_temp_step': 0.5}
+    for entity in ('climate.one', 'climate.two', 'climate.new'):
+        hass.states.async_set(entity, 'heat', attrs)
+    before = store.get_zone('climate.one')
+    await scheduler.async_set_automation_pause(['climate.one', 'climate.two'], True, 'automation')
+    climates = [{'entity': e, 'name': 'Room'} for e in ('climate.one', 'climate.two', 'climate.new')]
+    await scheduler.async_set_climates(climates, store.data['store_revision'])
+    assert store.get_zone('climate.new') == before
+    assert store.pause_reason('climate.new') == 'automation'
+    assert store.zone_groups()[0]['id'] == 'room'
+
+
+async def test_recovered_thermostat_stays_manual_while_paused(hass, group_backend):
+    from datetime import datetime
+    store, scheduler = group_backend
+    attrs = {'temperature': 16, 'hvac_modes': ['heat'], 'min_temp': 5, 'max_temp': 35, 'target_temp_step': 0.5}
+    hass.states.async_set('climate.one', 'unavailable', attrs)
+    assert scheduler.build_plan('climate.one', datetime(2026, 6, 22, 12)) is None
+    await scheduler.async_set_automation_pause(['climate.one', 'climate.two'], True, 'automation')
+    hass.states.async_set('climate.one', 'heat', attrs)
+    assert scheduler.build_plan('climate.one', datetime(2026, 6, 22, 12)) is None
+    scheduler.async_tick = AsyncMock()
+    await scheduler.async_set_automation_pause(['climate.one', 'climate.two'], False)
+    plan = scheduler.build_plan('climate.one', datetime(2026, 6, 22, 12))
+    assert plan is not None and plan.target_temp == 20
+    scheduler.async_tick.assert_awaited_once()
+
+
+async def test_renaming_group_does_not_require_unavailable_members(hass, group_backend):
+    store, scheduler = group_backend
+    original = deepcopy(store.data['zones'])
+    await scheduler.async_set_climates([
+        {'entity': 'climate.one', 'name': 'Renamed'},
+        {'entity': 'climate.two', 'name': 'Renamed'},
+    ], 0)
+    assert store.zone_groups()[0]['id'] == 'room'
+    assert store.data['zones'] == original

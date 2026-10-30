@@ -201,3 +201,14 @@ async def test_periodic_tick_skips_but_explicit_tick_waits() -> None:
     explicit_result = await explicit_tick
 
     assert explicit_result == {"applied": [], "failed": [], "running": False}
+
+
+def test_unavailable_thermostat_skipped_until_recovery() -> None:
+    entity = 'climate.room'
+    state = make_state(mode='unavailable', temperature=15)
+    scheduler = NimbusClimateScheduler(make_hass({entity: state}), FakeStore({entity: make_zone()}), [])
+    now = datetime(2026, 6, 22, 12)
+    assert scheduler.build_plan(entity, now) is None
+    state.state = 'heat'
+    plan = scheduler.build_plan(entity, now)
+    assert plan is not None and plan.target_temp == 20

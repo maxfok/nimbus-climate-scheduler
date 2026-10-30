@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
@@ -133,7 +134,7 @@ class NimbusClimateScheduler:
         if self.store.is_automation_paused(entity_id):
             return None
         state = self.hass.states.get(entity_id)
-        if state is None:
+        if state is None or str(state.state) in {"unknown", "unavailable"}:
             return None
 
         zone = self.store.get_zone(entity_id) or self.default_zone_data(state)
@@ -222,7 +223,52 @@ class NimbusClimateScheduler:
     async def async_set_climates(self, climates: list[dict[str, Any]], expected_store_revision: int) -> None:
         """Serialize zone setup with ticks and pause changes."""
         async with self._lock:
+            if expected_store_revision != self.store.data.get("store_revision", 0):
+                raise HomeAssistantError("Zone configuration changed elsewhere; reopen zone setup")
+            self._validate_new_group_members(climates)
             await self.store.async_set_climates(climates, expected_store_revision)
+
+    def _validate_new_group_members(self, climates: list[dict[str, Any]]) -> None:
+        """Reject new grouped members unless device capabilities and plans agree."""
+        groups = {}
+        for item in climates:
+            groups.setdefault(item.get("name") or item["entity"], []).append(item["entity"])
+        old = {g["name"]: g for g in self.store.zone_groups()}
+        for name, members in groups.items():
+            previous = old.get(name)
+            if previous is None:
+                previous = next((g for g in old.values() if set(g["entities"]) == set(members)), None)
+            previous_ids = set(previous["entities"]) if previous else set()
+            if len(members) < 2 or not (set(members) - previous_ids):
+                continue
+            states = [self.hass.states.get(entity) for entity in members]
+            if any(state is None or state.state in {"unknown", "unavailable"} for state in states):
+                raise HomeAssistantError("All thermostats must be available to check compatibility")
+            common_modes = {"heat", "cool"}
+            for state in states:
+                common_modes &= set(state.attributes.get("hvac_modes", []))
+            if not common_modes:
+                raise HomeAssistantError("Thermostats have no common heating or cooling mode")
+            try:
+                limits = [(float(st.attributes.get("min_temp", 7)), float(st.attributes.get("max_temp", 35)),
+                           float(st.attributes.get("target_temp_step", 0.5))) for st in states]
+            except (TypeError, ValueError):
+                raise HomeAssistantError("Thermostat temperature limits are invalid") from None
+            if any(step <= 0 for _, _, step in limits) or max(low for low, _, _ in limits) > min(high for _, high, _ in limits):
+                raise HomeAssistantError("Thermostats have incompatible temperature limits")
+            source = next((self.store.get_zone(e) for e in previous_ids if self.store.get_zone(e)), None)
+            if source:
+                active = source.get("activeScheduleMode")
+                if active and active not in common_modes:
+                    raise HomeAssistantError("The active mode is not supported by all thermostats")
+                for mode in common_modes:
+                    schedule = source.get("modes", {}).get(mode, {})
+                    for key in ("savedWeek", "draftWeek"):
+                        for points in schedule.get(key, {}).values():
+                            for point in points:
+                                value = float(point["temp"])
+                                if any(value < low or value > high or abs((value - low) / step - round((value - low) / step)) > 1e-7 for low, high, step in limits):
+                                    raise HomeAssistantError("Schedule temperature is incompatible with thermostat limits or steps")
 
     async def async_set_automation_pause(self, entity_ids: list[str], paused: bool, reason: str = "manual") -> None:
         """Pause a group after any in-flight tick, without changing its schedule."""
