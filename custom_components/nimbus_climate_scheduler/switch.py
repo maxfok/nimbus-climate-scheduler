@@ -48,13 +48,16 @@ def _setup_switches(hass, async_add_entities, entry=None):
             raise HomeAssistantError("Unknown Nimbus schedule switch")
         await entity.async_pause_with_reason(call.data["pause_reason"])
 
-    hass.services.async_register("switch", "nimbus_pause", pause_service, schema=vol.Schema({
+    pause_schema = vol.Schema({
         vol.Required("entity_id"): cv.entity_id,
         vol.Required("pause_reason"): vol.In(["manual", "automation"]),
-    }))
+    })
+    hass.services.async_register("switch", "nimbus_pause", pause_service, schema=pause_schema)
+    hass.services.async_register(DOMAIN, "nimbus_pause", pause_service, schema=pause_schema)
     cleanup = async_dispatcher_connect(hass, f"{DOMAIN}_groups_updated", update)
     if entry:
         entry.async_on_unload(lambda: hass.services.async_remove("switch", "nimbus_pause"))
+        entry.async_on_unload(lambda: hass.services.async_remove(DOMAIN, "nimbus_pause"))
         entry.async_on_unload(cleanup)
     update()
 
