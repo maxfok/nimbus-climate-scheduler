@@ -1,5 +1,9 @@
 # Nimbus Climate Scheduler — Change Log
 
+## Unreleased · v0.2.17
+
+- Distinguish inactive schedules from paused scheduler controls.
+
 ## Unreleased · v0.2.16
 
 - Add per-zone schedule pause controls and explicit automation pause reasons.

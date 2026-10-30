@@ -224,7 +224,7 @@ async def _async_register_card_resource(
     await resource_collection.async_get_info()
     for item in resource_collection.async_items() or []:
         item_url = str(item.get(CONF_URL, "")).split("?", 1)[0].rstrip("/")
-        if item_url not in {CARD_PUBLIC_PATH, CARD_FALLBACK_MODULE_URL}:
+        if item_url not in {CARD_PUBLIC_PATH, CARD_FALLBACK_MODULE_URL.split("?", 1)[0]}:
             continue
         if (
             item.get(CONF_TYPE) != "module"
