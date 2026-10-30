@@ -1,5 +1,9 @@
 # Nimbus Climate Scheduler — Change Log
 
+## Unreleased · v0.2.18
+
+- Add Home Assistant action metadata for the zone pause service and preserve the existing switch action.
+
 ## Unreleased · v0.2.17
 
 - Distinguish inactive schedules from paused scheduler controls.

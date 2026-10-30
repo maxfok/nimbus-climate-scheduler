@@ -133,6 +133,17 @@ async def test_real_home_assistant_nimbus_pause_service(hass, hass_storage):
     await hass.services.async_call('switch', 'turn_on', {'entity_id': entity_id}, blocking=True)
     assert hass.states.get(entity_id).state == 'on'
     assert hass.states.get(entity_id).attributes['pause_reason'] is None
+    import voluptuous as vol
+    for service_domain in ('switch', DOMAIN):
+        for reason in ('manual', 'automation'):
+            await hass.services.async_call(service_domain, 'nimbus_pause', {'entity_id': entity_id, 'pause_reason': reason}, blocking=True)
+            assert hass.states.get(entity_id).state == 'off'
+            assert hass.states.get(entity_id).attributes['pause_reason'] == reason
+            await hass.services.async_call('switch', 'turn_on', {'entity_id': entity_id}, blocking=True)
+        with pytest.raises(vol.Invalid):
+            await hass.services.async_call(service_domain, 'nimbus_pause', {'entity_id': entity_id, 'pause_reason': 'invalid'}, blocking=True)
+        with pytest.raises(vol.Invalid):
+            await hass.services.async_call(service_domain, 'nimbus_pause', {'entity_id': entity_id}, blocking=True)
 
 
 @pytest.mark.usefixtures('enable_custom_integrations')

@@ -1,0 +1,21 @@
+nimbus_pause:
+  name: Pause zone schedule
+  description: Pause the scheduler for the zone identified by its schedule switch.
+  fields:
+    entity_id:
+      name: Schedule switch
+      description: The entity ID of one Nimbus zone schedule switch.
+      required: true
+      selector:
+        entity:
+          domain: switch
+          multiple: false
+    pause_reason:
+      name: Pause reason
+      description: Explicitly identify whether the pause is manual or automation-controlled.
+      required: true
+      selector:
+        select:
+          options:
+            - manual
+            - automation
