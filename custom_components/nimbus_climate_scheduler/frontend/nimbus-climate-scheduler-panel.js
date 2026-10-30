@@ -102,6 +102,8 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     this._hass = hass;
     this.temperatureUnit = hass?.config?.unit_system?.temperature ?? "°C";
     this.updateMenuButton();
+    this.bindBackendConnection();
+    this.ensureBackendSubscription();
     // hass updates arrive for every entity in the house; only re-render
     // when something the panel actually shows has changed.
     if (this.syncZonesFromHass()) {
@@ -149,7 +151,9 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     }
     this.setupConnectionEvents();
     this.syncZonesFromHass();
+    this.bindBackendConnection();
     this.ensureBackendSync();
+    this.ensureBackendSubscription();
     this.startScheduler();
     this.render();
   }
@@ -160,6 +164,10 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     window.removeEventListener("pointercancel", this.stopDrag);
     this.narrowMedia?.removeEventListener("change", this.onNarrowMediaChange);
     window.clearTimeout(this._backendRetryTimer);
+    this._backendUnsubscribe?.();
+    this._backendUnsubscribe = null;
+    this._backendConnection?.removeEventListener?.("ready", this._backendReady);
+    this._backendConnection = null;
     this.stopScheduler();
     this.hideBubble();
   }
@@ -185,8 +193,8 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
 
     // Flush a render deferred while a form control was focused.
     this.root.addEventListener("focusout", () => {
-      if (!this.renderPending) return;
       queueMicrotask(() => {
+        this.flushBackendRefresh();
         const active = this.root.activeElement?.tagName;
         if (this.renderPending && !this.activeDrag && active !== "SELECT" && active !== "INPUT") {
           this.render();
@@ -289,6 +297,49 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     return changed;
   }
 
+  bindBackendConnection() {
+    const connection = this._hass?.connection;
+    if (!connection || connection === this._backendConnection) return;
+    this._backendConnection?.removeEventListener?.("ready", this._backendReady);
+    this._backendConnection = connection;
+    this._backendReady ??= () => {
+      if (!this.backendSyncComplete) { this.backendSyncStarted = false; this.ensureBackendSync(); }
+      this.requestBackendRefresh();
+    };
+    connection.addEventListener?.("ready", this._backendReady);
+  }
+
+  async ensureBackendSubscription() {
+    if (!this.isConnected || !this._hass?.connection?.subscribeMessage || this._backendUnsubscribe || this._subscribing) return;
+    this._subscribing = true;
+    try {
+      const unsubscribe = await this._hass.connection.subscribeMessage(
+        () => this.requestBackendRefresh(), { type: "nimbus_climate_scheduler/subscribe" },
+      );
+      if (this.isConnected) this._backendUnsubscribe = unsubscribe;
+      else unsubscribe();
+    } catch { /* Retry on the next Home Assistant state update. */ }
+    finally { this._subscribing = false; }
+  }
+
+  requestBackendRefresh() {
+    this._refreshPending = true;
+    this.flushBackendRefresh();
+  }
+
+  flushBackendRefresh() {
+    if (!this._refreshPending || !this.backendSyncComplete || this._refreshing || this.showSetup || this.activeDrag || this.zoneSaveQueues?.size) return;
+    const active = this.root?.activeElement?.tagName;
+    if (active === "INPUT" || active === "SELECT" || active === "TEXTAREA") return;
+    if ([...this.scheduleStore.values()].some(entry => Object.values(entry.modes ?? {}).some(mode => mode?.dirty))) return;
+    this._refreshPending = false;
+    this._refreshing = true;
+    this.syncBackendSchedules().finally(() => {
+      this._refreshing = false;
+      if (this._refreshPending) this.flushBackendRefresh();
+    });
+  }
+
   ensureBackendSync() {
     if (this.backendSyncStarted || !this.isConnectedOnce || !this._hass?.callWS) return;
     this.backendSyncStarted = true;
@@ -298,6 +349,12 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
   async syncBackendSchedules() {
     try {
       const result = await this._hass.callWS({ type: "nimbus_climate_scheduler/get_zones" });
+      if (this._refreshing && (this.activeDrag || this.zoneSaveQueues?.size || this.showSetup ||
+          [...this.scheduleStore.values()].some(entry => Object.values(entry.modes ?? {}).some(mode => mode?.dirty)) ||
+          ["INPUT", "SELECT", "TEXTAREA"].includes(this.root?.activeElement?.tagName))) {
+        this._refreshPending = true;
+        return;
+      }
       const zones = result?.zones ?? {};
       this.scheduleRevisions = { ...(result?.schedule_revisions ?? {}) };
       this.storeRevision = result?.store_revision ?? 0;
@@ -336,6 +393,7 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
         this.renderIfReady();
       }
     } catch {
+      this._refreshPending = true;
       this.backendSyncComplete = false;
       // Don't get stuck in the frontend fallback forever — allow a retry so the
       // panel reconnects to the backend scheduler instead of competing with it.
@@ -548,7 +606,7 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     });
     this.zoneSaveQueues.set(groupId, operation);
     try { return await operation; }
-    finally { if (this.zoneSaveQueues.get(groupId) === operation) this.zoneSaveQueues.delete(groupId); }
+    finally { if (this.zoneSaveQueues.get(groupId) === operation) this.zoneSaveQueues.delete(groupId); this.flushBackendRefresh(); }
   }
 
   getConfiguredClimates() {
@@ -1206,6 +1264,7 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     schedule.draftWeek[this.activeDrag.day] = normalizeSetpoints(schedule.draftWeek[this.activeDrag.day]);
     this.markDirty(zone, this.activeDrag.mode);
     this.activeDrag = null;
+    this.flushBackendRefresh();
     this.hideBubble();
     this.render();
   }
@@ -1404,7 +1463,7 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     if (failed.length) {
       const details = document.createElement("span");
       details.className = "apply-result-details";
-      details.textContent = failed.map((item) => item.entityId).join(", ");
+      details.textContent = failed.map((item) => `${item.entityId}: ${item.error ?? "Save failed"}`).join(" · ");
       this.applyResult.append(details);
     }
 
@@ -1629,6 +1688,7 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     schedule.draftWeek = cloneWeek(schedule.savedWeek);
     schedule.dirty = false;
     this.persistZone(zone);
+    this.flushBackendRefresh();
   }
 
   persistZone(zone) {

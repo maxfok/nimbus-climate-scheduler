@@ -160,6 +160,7 @@ class NimbusClimateSchedulerStore:
         updated["store_revision"] = updated.get("store_revision", 0) + 1
         await self._store.async_save(updated)
         self.data = updated
+        async_dispatcher_send(self.hass, f"{STORAGE_KEY}_groups_updated")
 
     async def async_set_group_schedule(self, group_id: str, expected_revision: int, zone_data: dict[str, Any]) -> int:
         """Commit one complete schedule to all members, rejecting stale edits.

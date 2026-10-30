@@ -12,7 +12,8 @@ from tests.test_scheduler import make_hass, make_state, make_zone
 
 
 @pytest.fixture
-def backend():
+def backend(monkeypatch):
+    monkeypatch.setattr("custom_components.nimbus_climate_scheduler.store.async_dispatcher_send", lambda *args: None)
     hass = make_hass({name: make_state() for name in ('climate.left', 'climate.right', 'climate.bedroom')})
     store = NimbusClimateSchedulerStore.__new__(NimbusClimateSchedulerStore)
     store.hass = hass

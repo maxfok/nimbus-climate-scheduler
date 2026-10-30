@@ -298,4 +298,45 @@ describe("Nimbus Climate Scheduler panel", () => {
     expect(panel.applyResultData.failed[0].error).toContain("changed elsewhere");
   });
 
+  it("defers subscription refresh while a local draft is dirty", () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    panel.backendSyncComplete = true;
+    panel.scheduleStore.set("climate.room", { modes: { heat: { dirty: true } } });
+    panel.syncBackendSchedules = vi.fn().mockResolvedValue();
+    panel.requestBackendRefresh();
+    expect(panel.syncBackendSchedules).not.toHaveBeenCalled();
+    expect(panel._refreshPending).toBe(true);
+    panel.scheduleStore.get("climate.room").modes.heat.dirty = false;
+    panel.flushBackendRefresh();
+    expect(panel.syncBackendSchedules).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a refresh pending after a failed save while the draft remains dirty", async () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    panel.backendSyncComplete = true;
+    const entry = { modes: { heat: { dirty: true } } };
+    panel.scheduleStore.set("climate.room", entry);
+    panel.syncBackendSchedules = vi.fn().mockResolvedValue();
+    panel.zoneSaveQueues = new Map([["room", Promise.reject(new Error("save failed"))]]);
+    panel.zoneSaveQueues.get("room").catch(() => {});
+    panel.requestBackendRefresh();
+    panel.zoneSaveQueues.clear(); panel.flushBackendRefresh();
+    expect(panel._refreshPending).toBe(true);
+    expect(panel.syncBackendSchedules).not.toHaveBeenCalled();
+    entry.modes.heat.dirty = false;
+    panel.flushBackendRefresh();
+    expect(panel.syncBackendSchedules).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks pending refresh after the Home Assistant connection becomes ready", () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    const connection = { addEventListener: vi.fn(), removeEventListener: vi.fn() };
+    panel._hass = { connection }; panel.backendSyncComplete = true;
+    panel.syncBackendSchedules = vi.fn().mockResolvedValue();
+    panel.bindBackendConnection();
+    const ready = connection.addEventListener.mock.calls.find(([type]) => type === "ready")[1];
+    ready();
+    expect(panel.syncBackendSchedules).toHaveBeenCalledTimes(1);
+  });
+
 });

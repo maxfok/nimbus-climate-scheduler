@@ -266,4 +266,15 @@ describe("Nimbus Climate Scheduler card", () => {
     expect(card.shadowRoot.querySelector(".head").dataset.state === "active").toBe(active);
   });
 
+  it("forces a fresh backend read when the connection becomes ready", () => {
+    const card = document.createElement("nimbus-climate-scheduler-card");
+    const connection = { addEventListener: vi.fn(), removeEventListener: vi.fn() };
+    card._hass = { connection };
+    card._maybeFetchZones = vi.fn();
+    card._bindConnection();
+    const ready = connection.addEventListener.mock.calls.find(([type]) => type === "ready")[1];
+    ready();
+    expect(card._maybeFetchZones).toHaveBeenCalledWith(true);
+  });
+
 });

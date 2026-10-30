@@ -6,9 +6,10 @@ import voluptuous as vol
 
 from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.components import websocket_api
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import DOMAIN
 from .scheduler import DAY_LENGTH_MINUTES, NimbusClimateScheduler
@@ -116,6 +117,17 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
             "store_revision": store.data.get("store_revision", 0),
             "schedule_revisions": store.data.get("schedule_revisions", {})})
 
+    @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/subscribe"})
+    @callback
+    def websocket_subscribe(hass, connection, msg):
+        @callback
+        def notify():
+            connection.send_event(msg["id"], {})
+        connection.subscriptions[msg["id"]] = async_dispatcher_connect(
+            hass, f"{DOMAIN}_groups_updated", notify
+        )
+        connection.send_result(msg["id"])
+
     @websocket_api.websocket_command({
         vol.Required("type"): f"{DOMAIN}/apply_now",
     })
@@ -133,3 +145,4 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_save_group_schedule)
     websocket_api.async_register_command(hass, websocket_set_climates)
     websocket_api.async_register_command(hass, websocket_apply_now)
+    websocket_api.async_register_command(hass, websocket_subscribe)
