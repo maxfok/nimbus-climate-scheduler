@@ -339,4 +339,19 @@ describe("Nimbus Climate Scheduler panel", () => {
     expect(panel.syncBackendSchedules).toHaveBeenCalledTimes(1);
   });
 
+  it("does not overwrite a dirty draft when reconnect fetch completes", async () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    const week = Object.fromEntries(["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(day => [day, [{ minute: 0, temp: 20 }]]));
+    const draft = structuredClone(week); draft.Mon[0].temp = 23;
+    const entry = { modes: { heat: { savedWeek: structuredClone(week), draftWeek: draft, dirty: true } } };
+    panel.scheduleStore.set("climate.room", entry);
+    panel._hasBackendSnapshot = true; panel.backendSyncComplete = false;
+    panel._hass = { callWS: vi.fn().mockResolvedValue({ zones: { "climate.room": { modes: { heat: { savedWeek: week, draftWeek: week } } } }, climates: [] }) };
+    await panel.syncBackendSchedules();
+    expect(entry.modes.heat.draftWeek.Mon[0].temp).toBe(23);
+    expect(entry.modes.heat.dirty).toBe(true);
+    expect(panel._refreshPending).toBe(true);
+    expect(panel._hass.callWS).toHaveBeenCalledTimes(1);
+  });
+
 });

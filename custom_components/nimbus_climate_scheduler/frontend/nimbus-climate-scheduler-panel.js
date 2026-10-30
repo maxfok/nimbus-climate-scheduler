@@ -349,9 +349,10 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
   async syncBackendSchedules() {
     try {
       const result = await this._hass.callWS({ type: "nimbus_climate_scheduler/get_zones" });
-      if (this._refreshing && (this.activeDrag || this.zoneSaveQueues?.size || this.showSetup ||
+      if ((this._refreshing || this._hasBackendSnapshot) && (this.activeDrag || this.zoneSaveQueues?.size || this.showSetup ||
           [...this.scheduleStore.values()].some(entry => Object.values(entry.modes ?? {}).some(mode => mode?.dirty)) ||
           ["INPUT", "SELECT", "TEXTAREA"].includes(this.root?.activeElement?.tagName))) {
+        this.backendSyncComplete = true;
         this._refreshPending = true;
         return;
       }
@@ -377,6 +378,7 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
       }
 
       this.backendSyncComplete = true;
+      this._hasBackendSnapshot = true;
       this.stopScheduler();
 
       // First run: nothing stored and nothing configured — open the setup wizard.
