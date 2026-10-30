@@ -316,7 +316,11 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
       const unsubscribe = await this._hass.connection.subscribeMessage(
         () => this.requestBackendRefresh(), { type: "nimbus_climate_scheduler/subscribe" },
       );
-      if (this.isConnected) this._backendUnsubscribe = unsubscribe;
+      if (this.isConnected) {
+        this._backendUnsubscribe = unsubscribe;
+        // Catch changes made between the initial snapshot and subscription.
+        this.requestBackendRefresh();
+      }
       else unsubscribe();
     } catch { /* Retry on the next Home Assistant state update. */ }
     finally { this._subscribing = false; }
@@ -357,6 +361,7 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
         return;
       }
       const zones = result?.zones ?? {};
+      const previousRevisions = this.scheduleRevisions ?? {};
       this.scheduleRevisions = { ...(result?.schedule_revisions ?? {}) };
       this.storeRevision = result?.store_revision ?? 0;
       this.serverClimates = Array.isArray(result?.climates) && result.climates.length
@@ -369,6 +374,18 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
         const supportedModes = zone?.supportedScheduleModes ?? ["heat", "cool"];
         const modes = restoreStoredModes(data?.modes);
         if (!modes) continue;
+
+        // A different editor may persist an unfinished draft before Save.
+        // Do not turn a clean session dirty or advance its write revision:
+        // a later notification can deliver the confirmed schedule, while an
+        // attempted local write will still conflict instead of replacing it.
+        const existing = this.scheduleStore.get(entityId);
+        if (this._hasBackendSnapshot && existing?.modes &&
+            Object.values(modes).some(mode => mode.dirty)) {
+          const groupId = this.serverClimates?.find(item => item.entity === entityId)?.zone_id;
+          if (groupId) this.scheduleRevisions[groupId] = previousRevisions[groupId] ?? 0;
+          continue;
+        }
 
         const entry = this.getOrCreateStoreEntry(entityId);
         entry.modes = modes;
@@ -404,6 +421,9 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
       this._backendRetryTimer = window.setTimeout(() => {
         if (this.isConnected) this.ensureBackendSync();
       }, 5000);
+    } finally {
+      // Notifications can arrive while the initial snapshot is in flight.
+      if (!this._refreshing) this.flushBackendRefresh();
     }
   }
 
@@ -953,7 +973,7 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
       this.requestNavigation(() => {
         this.selectedZoneId = zone.id;
         this.selectedDay = isActive ? null : day;
-      });
+      }, zone.id === this.selectedZoneId);
     };
     row.querySelector(".day-button").addEventListener("click", selectDay);
 
@@ -1314,7 +1334,7 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     editButton.addEventListener("click", () => {
       this.requestNavigation(() => {
         this.selectedZoneId = zone.id;
-      });
+      }, zone.id === this.selectedZoneId);
     });
 
     const deleteButton = document.createElement("button");
@@ -1553,11 +1573,11 @@ class NimbusClimateSchedulerPanel extends HTMLElement {
     this.persistZone(zone);
   }
 
-  requestNavigation(applyNavigation) {
+  requestNavigation(applyNavigation, staysInZone = false) {
     const zone = this.findZone(this.selectedZoneId);
     const schedule = zone ? this.getModeSchedule(zone) : null;
 
-    if (!schedule?.dirty) {
+    if (staysInZone || !schedule?.dirty) {
       applyNavigation();
       this.pendingNavigation = null;
       this.render();
