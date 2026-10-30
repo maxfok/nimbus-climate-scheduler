@@ -142,4 +142,228 @@ describe("Nimbus Climate Scheduler panel", () => {
     expect(panel.zoneStatusText({ entityIds: ["climate.room"], activeScheduleMode: mode, hvacMode: "heat" })).toBe(expected);
   });
 
+  it("saves a zone atomically with the last confirmed revision", async () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    panel.backendSyncComplete = true;
+    panel.serverClimates = [{ entity: "climate.room", zone_id: "room" }];
+    panel.scheduleRevisions = { room: 4 };
+    const callWS = vi.fn().mockResolvedValue({ revision: 5 });
+    panel._hass = { callWS };
+    const week = Object.fromEntries(["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(day => [day, [{ minute: 0, temp: 20 }]]));
+    const zone = { entityId: "climate.room", scheduleMode: "heat", activeScheduleMode: "heat", modes: { heat: { savedWeek: week, draftWeek: week } } };
+    await panel.saveZoneToBackend(zone);
+    expect(callWS).toHaveBeenCalledWith(expect.objectContaining({ type: "nimbus_climate_scheduler/save_group_schedule", zone_id: "room", expected_revision: 4 }));
+    expect(panel.scheduleRevisions.room).toBe(5);
+  });
+
+  it.each(["save failed", "conflict: newer changes"])('keeps draft and dirty state on %s', async (message) => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    panel.backendSyncComplete = true;
+    panel.serverClimates = [{ entity: "climate.room", zone_id: "room" }];
+    panel.scheduleRevisions = { room: 2 };
+    panel._hass = { callWS: vi.fn().mockRejectedValue(new Error(message)) };
+    panel.render = vi.fn(); panel.renderIfReady = vi.fn();
+    const week = Object.fromEntries(["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(day => [day, [{ minute: 0, temp: 20 }]]));
+    const draft = structuredClone(week); draft.Mon[0].temp = 22;
+    const schedule = { savedWeek: structuredClone(week), draftWeek: draft, dirty: true };
+    const zone = { entityId: "climate.room", name: "Room", scheduleMode: "heat", activeScheduleMode: "heat", modes: { heat: schedule } };
+    await panel.saveZoneMode(zone, "heat");
+    expect(schedule.draftWeek.Mon[0].temp).toBe(22);
+    expect(schedule.savedWeek.Mon[0].temp).toBe(20);
+    expect(schedule.dirty).toBe(true);
+    expect(panel.scheduleRevisions.room).toBe(2);
+    expect(panel.applyResultData.failed[0].error).toBe(message);
+  });
+
+  it("keeps newer draft edits dirty while a save is pending", async () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    panel.backendSyncComplete = true;
+    panel.serverClimates = [{ entity: "climate.room", zone_id: "room" }];
+    panel.scheduleRevisions = { room: 0 };
+    let resolveSave;
+    panel._hass = { callWS: vi.fn().mockImplementation(({ type }) => type.endsWith("save_group_schedule") ? new Promise(resolve => { resolveSave = resolve; }) : Promise.resolve({})) };
+    panel.render = vi.fn(); panel.renderIfReady = vi.fn();
+    const week = Object.fromEntries(["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(day => [day, [{ minute: 0, temp: 20 }]]));
+    const schedule = { savedWeek: structuredClone(week), draftWeek: structuredClone(week), dirty: true };
+    schedule.draftWeek.Mon[0].temp = 21;
+    const zone = { entityId: "climate.room", name: "Room", scheduleMode: "heat", activeScheduleMode: "heat", modes: { heat: schedule } };
+    const saving = panel.saveZoneMode(zone, "heat");
+    await Promise.resolve();
+    schedule.draftWeek.Mon[0].temp = 22;
+    resolveSave({ revision: 1 });
+    await saving;
+    expect(schedule.savedWeek.Mon[0].temp).toBe(21);
+    expect(schedule.draftWeek.Mon[0].temp).toBe(22);
+    expect(schedule.dirty).toBe(true);
+  });
+
+  it("serializes automatic and manual saves without reverting the confirmed week", async () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    panel.backendSyncComplete = true; panel.serverClimates = [{ entity: "climate.room", zone_id: "room" }];
+    panel.scheduleRevisions = { room: 0 }; panel.render = vi.fn(); panel.renderIfReady = vi.fn();
+    let release; const writes = [];
+    panel._hass = { callWS: vi.fn(async msg => {
+      if (msg.type.endsWith("apply_now")) return {};
+      writes.push(structuredClone(msg));
+      if (writes.length === 1) await new Promise(resolve => { release = resolve; });
+      return { revision: writes.length };
+    }) };
+    const week = Object.fromEntries(["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(day => [day, [{ minute: 0, temp: 20 }]]));
+    const schedule = { savedWeek: structuredClone(week), draftWeek: structuredClone(week), dirty: true };
+    schedule.draftWeek.Mon[0].temp = 21;
+    const zone = { entityId: "climate.room", name: "Room", scheduleMode: "heat", activeScheduleMode: "heat", modes: { heat: schedule } };
+    const saved = panel.saveZoneMode(zone, "heat"); await Promise.resolve();
+    schedule.draftWeek.Mon[0].temp = 22;
+    const next = panel.saveZoneToBackend(zone);
+    release(); await Promise.all([saved, next]);
+    expect(writes).toHaveLength(2);
+    expect(writes[1].expected_revision).toBe(1);
+    expect(writes[1].data.modes.heat.savedWeek.Mon[0].temp).toBe(21);
+    expect(writes[1].data.modes.heat.draftWeek.Mon[0].temp).toBe(22);
+    expect(schedule.dirty).toBe(true);
+  });
+
+  it("rejects stale independent sessions without discarding the other draft", async () => {
+    let revision = 0;
+    const backend = vi.fn(async msg => {
+      if (msg.type.endsWith("apply_now")) return {};
+      if (msg.expected_revision !== revision) throw new Error("conflict: newer changes");
+      return { revision: ++revision };
+    });
+    const week = Object.fromEntries(["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(day => [day, [{ minute: 0, temp: 20 }]]));
+    const makeSession = (temp) => {
+      const panel = document.createElement("nimbus-climate-scheduler-panel");
+      panel.backendSyncComplete = true; panel.serverClimates = [{ entity: "climate.room", zone_id: "room" }];
+      panel.scheduleRevisions = { room: 0 }; panel._hass = { callWS: backend }; panel.render = vi.fn(); panel.renderIfReady = vi.fn();
+      const schedule = { savedWeek: structuredClone(week), draftWeek: structuredClone(week), dirty: true };
+      schedule.draftWeek.Mon[0].temp = temp;
+      return { panel, schedule, zone: { entityId: "climate.room", name: "Room", scheduleMode: "heat", activeScheduleMode: "heat", modes: { heat: schedule } } };
+    };
+    const a = makeSession(21), b = makeSession(22);
+    await a.panel.saveZoneMode(a.zone, "heat"); await b.panel.saveZoneMode(b.zone, "heat");
+    expect(revision).toBe(1); expect(b.panel.scheduleRevisions.room).toBe(0);
+    expect(b.schedule.draftWeek.Mon[0].temp).toBe(22); expect(b.schedule.savedWeek.Mon[0].temp).toBe(20);
+    expect(b.schedule.dirty).toBe(true); expect(b.panel.applyResultData.failed[0].error).toContain("conflict");
+  });
+
+  it("keeps heat and cool saves bound to their original mode while queued", async () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    panel.backendSyncComplete = true; panel.serverClimates = [{ entity: "climate.room", zone_id: "room" }];
+    panel.scheduleRevisions = { room: 0 }; panel.render = vi.fn(); panel.renderIfReady = vi.fn();
+    let release; const writes = [];
+    panel._hass = { callWS: vi.fn(async msg => {
+      if (msg.type.endsWith("apply_now")) return {};
+      writes.push(structuredClone(msg)); if (writes.length === 1) await new Promise(resolve => { release = resolve; });
+      return { revision: writes.length };
+    }) };
+    const week = Object.fromEntries(["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(day => [day, [{ minute: 0, temp: 20 }]]));
+    const mode = () => ({ savedWeek: structuredClone(week), draftWeek: structuredClone(week), dirty: true });
+    const heat = mode(), cool = mode(); heat.draftWeek.Mon[0].temp = 21; cool.draftWeek.Mon[0].temp = 25;
+    const zone = { entityId: "climate.room", name: "Room", scheduleMode: "heat", activeScheduleMode: "heat", modes: { heat, cool } };
+    const first = panel.saveZoneMode(zone, "heat"); await Promise.resolve(); zone.scheduleMode = "cool";
+    const second = panel.saveZoneMode(zone, "cool"); release(); await Promise.all([first, second]);
+    expect(writes[1].data.modes.heat.savedWeek.Mon[0].temp).toBe(21);
+    expect(writes[1].data.modes.cool.savedWeek.Mon[0].temp).toBe(25);
+    expect(heat.dirty).toBe(false); expect(cool.dirty).toBe(false);
+  });
+
+  it("initializes a new zone without rewriting an existing schedule", async () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    panel.backendSyncComplete = true;
+    panel.setupDraft = [{ entity: "climate.old", name: "Old", checked: true }, { entity: "climate.new", name: "New", checked: true }];
+    const oldZone = { entityId: "climate.old", entityIds: ["climate.old"] };
+    const newZone = { entityId: "climate.new", entityIds: ["climate.new"] };
+    panel.syncZonesFromHass = vi.fn(() => { panel.zones = [oldZone, newZone]; });
+    panel.render = vi.fn(); panel.saveZoneToBackend = vi.fn().mockResolvedValue({});
+    panel._hass = { callWS: vi.fn(async msg => msg.type.endsWith("set_climates")
+      ? { climates: [{ entity: "climate.old", name: "Old", zone_id: "old" }, { entity: "climate.new", name: "New", zone_id: "new" }] }
+      : { zones: { "climate.old": { modes: {} } }, schedule_revisions: { old: 7 } }) };
+    await panel.applySetup();
+    expect(panel.saveZoneToBackend).toHaveBeenCalledTimes(1);
+    expect(panel.saveZoneToBackend).toHaveBeenCalledWith(newZone);
+    expect(panel.scheduleRevisions.old).toBe(7);
+    expect(panel._hass.callWS.mock.calls[0][0]).toEqual(expect.objectContaining({ expected_store_revision: 0 }));
+  });
+
+  it("keeps zone setup open and unchanged when membership revision conflicts", async () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    panel.setupDraft = [{ entity: "climate.new", name: "New", checked: true }];
+    panel.showSetup = true; panel.setupStoreRevision = 3; panel.storeRevision = 5;
+    panel._hass = { callWS: vi.fn().mockRejectedValue(new Error("Zone configuration changed elsewhere")) };
+    panel.renderIfReady = vi.fn();
+    await panel.applySetup();
+    expect(panel._hass.callWS).toHaveBeenCalledWith(expect.objectContaining({ expected_store_revision: 3 }));
+    expect(panel.showSetup).toBe(true);
+    expect(panel.setupDraft[0].entity).toBe("climate.new");
+    expect(panel.applyResultData.failed[0].error).toContain("changed elsewhere");
+  });
+
+  it("defers subscription refresh while a local draft is dirty", () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    panel.backendSyncComplete = true;
+    panel.scheduleStore.set("climate.room", { modes: { heat: { dirty: true } } });
+    panel.syncBackendSchedules = vi.fn().mockResolvedValue();
+    panel.requestBackendRefresh();
+    expect(panel.syncBackendSchedules).not.toHaveBeenCalled();
+    expect(panel._refreshPending).toBe(true);
+    panel.scheduleStore.get("climate.room").modes.heat.dirty = false;
+    panel.flushBackendRefresh();
+    expect(panel.syncBackendSchedules).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a refresh pending after a failed save while the draft remains dirty", async () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    panel.backendSyncComplete = true;
+    const entry = { modes: { heat: { dirty: true } } };
+    panel.scheduleStore.set("climate.room", entry);
+    panel.syncBackendSchedules = vi.fn().mockResolvedValue();
+    panel.zoneSaveQueues = new Map([["room", Promise.reject(new Error("save failed"))]]);
+    panel.zoneSaveQueues.get("room").catch(() => {});
+    panel.requestBackendRefresh();
+    panel.zoneSaveQueues.clear(); panel.flushBackendRefresh();
+    expect(panel._refreshPending).toBe(true);
+    expect(panel.syncBackendSchedules).not.toHaveBeenCalled();
+    entry.modes.heat.dirty = false;
+    panel.flushBackendRefresh();
+    expect(panel.syncBackendSchedules).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks pending refresh after the Home Assistant connection becomes ready", () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    const connection = { addEventListener: vi.fn(), removeEventListener: vi.fn() };
+    panel._hass = { connection }; panel.backendSyncComplete = true;
+    panel.syncBackendSchedules = vi.fn().mockResolvedValue();
+    panel.bindBackendConnection();
+    const ready = connection.addEventListener.mock.calls.find(([type]) => type === "ready")[1];
+    ready();
+    expect(panel.syncBackendSchedules).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not overwrite a dirty draft when reconnect fetch completes", async () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    const week = Object.fromEntries(["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(day => [day, [{ minute: 0, temp: 20 }]]));
+    const draft = structuredClone(week); draft.Mon[0].temp = 23;
+    const entry = { modes: { heat: { savedWeek: structuredClone(week), draftWeek: draft, dirty: true } } };
+    panel.scheduleStore.set("climate.room", entry);
+    panel._hasBackendSnapshot = true; panel.backendSyncComplete = false;
+    panel._hass = { callWS: vi.fn().mockResolvedValue({ zones: { "climate.room": { modes: { heat: { savedWeek: week, draftWeek: week } } } }, climates: [] }) };
+    await panel.syncBackendSchedules();
+    expect(entry.modes.heat.draftWeek.Mon[0].temp).toBe(23);
+    expect(entry.modes.heat.dirty).toBe(true);
+    expect(panel._refreshPending).toBe(true);
+    expect(panel._hass.callWS).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains five default setpoints per day for both Heat and Cool", () => {
+    const panel = document.createElement("nimbus-climate-scheduler-panel");
+    const schedules = panel.makeDefaultSchedules(climateState("heat"));
+    for (const mode of ["heat", "cool"]) {
+      for (const day of ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]) {
+        expect(schedules[mode].savedWeek[day]).toHaveLength(5);
+        expect(schedules[mode].draftWeek[day]).toHaveLength(5);
+        expect(schedules[mode].savedWeek[day][0].minute).toBe(0);
+      }
+    }
+  });
+
 });

@@ -7,6 +7,7 @@ from uuid import uuid4
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 
 from .const import STORAGE_KEY, STORAGE_VERSION
@@ -37,8 +38,11 @@ class NimbusClimateSchedulerStore:
         climates = self.data.get("climates")
         return deepcopy(climates) if isinstance(climates, list) else []
 
-    async def async_set_climates(self, climates: list[dict[str, Any]]) -> None:
+    async def async_set_climates(self, climates: list[dict[str, Any]], expected_store_revision: int | None = None) -> None:
         """Update membership atomically, inheriting the destination zone state."""
+        current_revision = self.data.get("store_revision", 0)
+        if expected_store_revision is not None and expected_store_revision != current_revision:
+            raise HomeAssistantError("Zone configuration changed elsewhere; reopen zone setup")
         old_groups = {g["id"]: g for g in self.zone_groups()}
         assigned = self._with_group_ids(climates)
         updated = deepcopy(self.data)
@@ -73,6 +77,12 @@ class NimbusClimateSchedulerStore:
         updated["zones"] = zones
         updated["automation_paused"] = sorted(paused)
         updated["pause_reasons"] = reasons
+        revisions = updated.setdefault("schedule_revisions", {})
+        for group_id in set(old_groups) | set(groups):
+            old_members = set(old_groups.get(group_id, {}).get("entities", []))
+            if old_members != set(groups.get(group_id, [])):
+                revisions[group_id] = revisions.get(group_id, 0) + 1
+        updated["store_revision"] = current_revision + 1
         await self._store.async_save(updated)
         self.data = updated
         async_dispatcher_send(self.hass, f"{STORAGE_KEY}_groups_updated")
@@ -147,12 +157,32 @@ class NimbusClimateSchedulerStore:
                 reasons[entity_id] = reason
             else:
                 reasons.pop(entity_id, None)
+        updated["store_revision"] = updated.get("store_revision", 0) + 1
         await self._store.async_save(updated)
         self.data = updated
+        async_dispatcher_send(self.hass, f"{STORAGE_KEY}_groups_updated")
 
-    async def async_set_zone(self, entity_id: str, zone_data: dict[str, Any]) -> None:
-        self.data.setdefault("zones", {})[entity_id] = deepcopy(zone_data)
-        await self.async_save()
+    async def async_set_group_schedule(self, group_id: str, expected_revision: int, zone_data: dict[str, Any]) -> int:
+        """Commit one complete schedule to all members, rejecting stale edits.
+
+        The caller must hold the scheduler lock, including while persisting.
+        """
+        group = next((g for g in self.zone_groups() if g["id"] == group_id), None)
+        if not group:
+            raise HomeAssistantError("Zone no longer exists")
+        current = self.data.get("schedule_revisions", {}).get(group_id, 0)
+        if expected_revision != current:
+            raise HomeAssistantError("Schedule changed elsewhere; reload before saving")
+        updated = deepcopy(self.data)
+        for entity in group["entities"]:
+            updated.setdefault("zones", {})[entity] = deepcopy(zone_data)
+        next_revision = current + 1
+        updated.setdefault("schedule_revisions", {})[group_id] = next_revision
+        updated["store_revision"] = updated.get("store_revision", 0) + 1
+        await self._store.async_save(updated)
+        self.data = updated
+        async_dispatcher_send(self.hass, f"{STORAGE_KEY}_groups_updated")
+        return next_revision
 
     def as_dict(self) -> dict[str, Any]:
         return deepcopy(self.data)
