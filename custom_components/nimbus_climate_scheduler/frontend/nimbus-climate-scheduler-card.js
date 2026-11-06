@@ -401,8 +401,11 @@
       try {
         const result = await this._hass.callWS({ type: WS_GET_ZONES });
         const nextZones = result?.zones ?? {};
-        const scheduleChanged = this._activeScheduleSignature(nextZones) !== this._activeScheduleSignature();
+        const nextOverrides = result?.temporary_overrides ?? {};
+        const scheduleChanged = this._activeScheduleSignature(nextZones) !== this._activeScheduleSignature() ||
+          JSON.stringify(nextOverrides) !== JSON.stringify(this._overrides ?? {});
         this._zones = nextZones;
+        this._overrides = nextOverrides;
         this._zonesFetchedAt = Date.now();
         if (this._retryTimer) clearTimeout(this._retryTimer);
         this._retryTimer = null;
@@ -468,6 +471,7 @@
 
       return {
         name, room, mode,
+        override: this._overrides?.[ent.entity],
         state: "active",
         cur, next, hasNext,
         frac,
@@ -488,6 +492,11 @@
       return `holding ${fmtTemp(sp)}`;
     }
     _statusText(m, t) {
+      if (m.override && m.state === "active") {
+        const until = new Date(m.override.until);
+        const time = Number.isNaN(until.getTime()) ? "" : until.toLocaleTimeString(this._hass?.locale?.language, { hour: "2-digit", minute: "2-digit" });
+        return `Override ${fmtTemp(m.override.temperature)}${time ? ` until ${time}` : ""}`;
+      }
       if (m.state === "off") {
         const pause = m.paused === "automation" ? "Paused due to control by automation" : m.paused ? "Paused" : "";
         if (m.noActiveSchedule) return pause ? `No active schedule · ${pause}` : "No active schedule";
