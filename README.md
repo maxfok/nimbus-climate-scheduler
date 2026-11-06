@@ -139,3 +139,23 @@ npm test
 ```
 
 Both suites also run automatically for every push and pull request.
+
+
+## Beta: temporary external setpoint override
+
+An external change to a scheduled thermostat's target temperature temporarily holds that
+thermostat until its next scheduled point. Changes from dashboards, automations, vendor apps
+and physical controls are treated alike when Home Assistant reports them. The card shows the
+hold and its expiry. Each thermostat in a group has its own hold. Holds survive a Home
+Assistant restart. Saving a changed active schedule or resuming a paused zone clears the hold.
+
+This is experimental. Integrations can report commands late or without their original context;
+the scheduler uses a short matching window for its own commands, so detection cannot be
+guaranteed for every device. A thermostat that rounds or rejects temperatures, operates its own
+schedule, or reports intermediate values can trigger an unexpected hold. Availability recovery
+is not treated as a manual change. Test with a supervised thermostat first.
+
+Please report results in [issue #7](https://github.com/maxfok/nimbus-climate-scheduler/issues/7),
+including integration and thermostat model, local/cloud connection, source of the change,
+expected and actual behaviour, timing, and whether the hold ended at the next point. Do not
+include credentials or personal information.

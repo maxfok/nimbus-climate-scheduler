@@ -6,12 +6,14 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_STATE_CHANGED
+from homeassistant.core import Context, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
-from .const import DEFAULT_SCAN_INTERVAL
+from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 from .store import NimbusClimateSchedulerStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,10 +57,15 @@ class NimbusClimateScheduler:
         self.last_run: str | None = None
         self._remove_interval = None
         self._lock = asyncio.Lock()
+        self._remove_state_listener = None
+        self._own_contexts: set[str] = set()
+        self._pending_targets: dict[str, tuple[float, float]] = {}
+        self._overrides: dict[str, dict[str, Any]] = dict(getattr(store, "data", {}).get("temporary_overrides", {}))
 
     def start(self) -> None:
         """Start the backend scheduler loop."""
         self.stop()
+        self._remove_state_listener = self.hass.bus.async_listen(EVENT_STATE_CHANGED, self._state_changed)
         self._remove_interval = async_track_time_interval(
             self.hass,
             self._async_periodic_tick,
@@ -71,6 +78,51 @@ class NimbusClimateScheduler:
         if self._remove_interval:
             self._remove_interval()
             self._remove_interval = None
+        if self._remove_state_listener:
+            self._remove_state_listener()
+            self._remove_state_listener = None
+
+    @callback
+    def _state_changed(self, event) -> None:
+        """Detect changes to a scheduled setpoint, including attribute-only changes."""
+        entity_id = event.data["entity_id"]
+        old, new = event.data.get("old_state"), event.data.get("new_state")
+        if entity_id not in self.scheduled_entity_ids() or old is None or new is None:
+            return
+        if old.state in {"unknown", "unavailable"} or new.state in {"unknown", "unavailable"}:
+            return
+        before, after = old.attributes.get("temperature"), new.attributes.get("temperature")
+        if before is None or after is None or before == after:
+            return
+        context = new.context
+        if context.id in self._own_contexts or context.parent_id in self._own_contexts:
+            return
+        pending = self._pending_targets.get(entity_id)
+        if pending and dt_util.utcnow().timestamp() <= pending[1]:
+            try:
+                if abs(float(after) - pending[0]) < 0.001:
+                    self._pending_targets.pop(entity_id, None)
+                    return
+            except (TypeError, ValueError):
+                return
+        zone = self.store.get_zone(entity_id) or {}
+        mode = zone.get("activeScheduleMode")
+        if mode not in ACTIVE_MODES or self.store.is_automation_paused(entity_id):
+            return
+        week = zone.get("modes", {}).get(mode, {}).get("savedWeek")
+        now = dt_util.now()
+        until = next_schedule_boundary(week, now)
+        if until is None:
+            return
+        self._overrides[entity_id] = {"temperature": after, "until": until.isoformat(), "mode": mode}
+        self.hass.async_create_task(self._persist_overrides())
+        async_dispatcher_send(self.hass, f"{DOMAIN}_groups_updated")
+        _LOGGER.info("External temperature change on %s: schedule held until %s", entity_id, until)
+
+    async def _persist_overrides(self) -> None:
+        async with self._lock:
+            self.store.data["temporary_overrides"] = dict(self._overrides)
+            await self.store.async_save()
 
     async def _async_periodic_tick(self, now=None) -> dict[str, Any]:
         """Run a scheduled tick, skipping it when another tick is active."""
@@ -94,6 +146,15 @@ class NimbusClimateScheduler:
             plans = []
             for entity_id in self.scheduled_entity_ids():
                 try:
+                    override = self._overrides.get(entity_id)
+                    if override:
+                        zone = self.store.get_zone(entity_id) or {}
+                        until = dt_util.parse_datetime(override["until"])
+                        if until and now < until and zone.get("activeScheduleMode") == override["mode"]:
+                            continue
+                        self._overrides.pop(entity_id, None)
+                        self.hass.async_create_task(self._persist_overrides())
+                        async_dispatcher_send(self.hass, f"{DOMAIN}_groups_updated")
                     plan = self.build_plan(entity_id, now)
                 except Exception:  # noqa: BLE001 — bad data for one zone must not crash the tick
                     failed.append(entity_id)
@@ -180,12 +241,16 @@ class NimbusClimateScheduler:
 
     async def async_apply_plan(self, plan: ApplyPlan) -> None:
         """Send Home Assistant climate service calls for a plan."""
+        context = Context()
+        self._own_contexts.add(context.id)
+        self.hass.loop.call_later(120, self._own_contexts.discard, context.id)
         if plan.action == "off":
             await self.hass.services.async_call(
                 "climate",
                 "set_hvac_mode",
                 {"entity_id": plan.entity_id, "hvac_mode": "off"},
                 blocking=True,
+                context=context,
             )
             _LOGGER.debug("Turned off %s from Nimbus scheduler", plan.entity_id)
             return
@@ -196,17 +261,22 @@ class NimbusClimateScheduler:
                 "set_hvac_mode",
                 {"entity_id": plan.entity_id, "hvac_mode": plan.mode},
                 blocking=True,
+                context=context,
             )
             # Give the device a moment to switch modes so the setpoint that
             # follows lands on the new mode — Z-Wave units otherwise drop it,
             # which is why a second "apply" used to be needed.
             await asyncio.sleep(1)
 
+        self._pending_targets[plan.entity_id] = (
+            float(plan.target_temp), dt_util.utcnow().timestamp() + 120
+        )
         await self.hass.services.async_call(
             "climate",
             "set_temperature",
             {"entity_id": plan.entity_id, "temperature": plan.target_temp},
             blocking=True,
+            context=context,
         )
         _LOGGER.debug(
             "Applied %s target %s to %s from Nimbus scheduler",
@@ -218,7 +288,19 @@ class NimbusClimateScheduler:
     async def async_set_group_schedule(self, group_id: str, expected_revision: int, zone_data: dict[str, Any]) -> int:
         """Serialize group writes with ticks and pause transitions."""
         async with self._lock:
-            return await self.store.async_set_group_schedule(group_id, expected_revision, zone_data)
+            group = next((g for g in self.store.zone_groups() if g["id"] == group_id), None)
+            previous = self.store.get_zone(group["entities"][0]) if group and group["entities"] else None
+            revision = await self.store.async_set_group_schedule(group_id, expected_revision, zone_data)
+            old_mode = (previous or {}).get("activeScheduleMode")
+            new_mode = zone_data.get("activeScheduleMode")
+            old_week = (previous or {}).get("modes", {}).get(old_mode, {}).get("savedWeek")
+            new_week = zone_data.get("modes", {}).get(new_mode, {}).get("savedWeek")
+            if group and (old_mode != new_mode or old_week != new_week):
+                for entity_id in group["entities"]:
+                    self._overrides.pop(entity_id, None)
+                self.store.data["temporary_overrides"] = dict(self._overrides)
+                await self.store.async_save()
+            return revision
 
     async def async_set_climates(self, climates: list[dict[str, Any]], expected_store_revision: int) -> None:
         """Serialize zone setup with ticks and pause changes."""
@@ -274,6 +356,11 @@ class NimbusClimateScheduler:
         """Pause a group after any in-flight tick, without changing its schedule."""
         async with self._lock:
             await self.store.async_set_automation_pause(entity_ids, paused, reason)
+            if not paused:
+                for entity_id in entity_ids:
+                    self._overrides.pop(entity_id, None)
+                self.store.data["temporary_overrides"] = dict(self._overrides)
+                await self.store.async_save()
         if not paused:
             await self.async_tick()
 
@@ -287,6 +374,7 @@ class NimbusClimateScheduler:
             ],
             "scan_interval": self.scan_interval,
             "last_run": self.last_run,
+            "temporary_overrides": dict(self._overrides),
         }
 
     def temperature_unit(self) -> str:
@@ -416,6 +504,24 @@ def get_schedule_point_for_time(week, now) -> dict[str, Any] | None:
         "next": next_point,
         "nextTime": minutes_to_time(schedule_minute_to_clock_minute(next_point["minute"])),
     }
+
+
+def next_schedule_boundary(week, now):
+    """Return the next actual saved point, including the next 05:00 day boundary."""
+    if not isinstance(week, dict):
+        return None
+    for offset in range(8):
+        schedule_day = (now - timedelta(hours=5)).date() + timedelta(days=offset)
+        points = week.get(DAYS[schedule_day.weekday()])
+        if not isinstance(points, list):
+            continue
+        start = now.replace(year=schedule_day.year, month=schedule_day.month, day=schedule_day.day,
+                            hour=5, minute=0, second=0, microsecond=0)
+        for point in sorted(points, key=lambda item: item["minute"]):
+            candidate = start + timedelta(minutes=point["minute"])
+            if candidate > now:
+                return candidate
+    return None
 
 
 def minutes_to_time(total_minutes: int) -> str:

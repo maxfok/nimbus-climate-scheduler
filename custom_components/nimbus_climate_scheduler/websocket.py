@@ -61,6 +61,11 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
                 for entity_id, zone in zones.items()
                 if perms.check_entity(entity_id, POLICY_READ)
             }
+            data["temporary_overrides"] = {
+                entity_id: override
+                for entity_id, override in (data.get("temporary_overrides") or {}).items()
+                if perms.check_entity(entity_id, POLICY_READ)
+            }
             for key in ("climates", "configured_climates"):
                 items = data.get(key)
                 if isinstance(items, list):
